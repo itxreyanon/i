@@ -1,9 +1,9 @@
-// client.js
 import { IgApiClient } from 'instagram-private-api';
 import { withRealtime } from 'instagram_mqtt';
 import { EventEmitter } from 'events';
-import fs from 'fs'; // Keep standard fs for sync ops if needed, but use fs.promises internally
-import { promises as fsPromises } from 'fs'; // Use fs.promises for async/await
+// Use fs.promises for consistency with OriginalInstagramBot.js
+import { promises as fsPromises } from 'fs'; // CHANGED: Use fs.promises
+import { existsSync, mkdirSync } from 'fs'; // Keep sync for quick checks/mkdir
 import tough from 'tough-cookie';
 import { Collection } from '@discordjs/collection';
 import User from '../utils/User.js';
@@ -30,8 +30,8 @@ export class InstagramClient extends EventEmitter {
      */
     this.options = {
       disableReplyPrefix: false,
-      // Align session path default with OriginalInstagramBot.js or make configurable
-      sessionPath: './session.json', // Changed default to match OriginalInstagramBot.js structure
+      // Align session path default with OriginalInstagramBot.js structure
+      sessionPath: './session.json', // CHANGED: Default to session.json like OriginalInstagramBot.js
       messageCheckInterval: 5000,
       maxRetries: 3,
       autoReconnect: true,
@@ -59,7 +59,7 @@ export class InstagramClient extends EventEmitter {
      * Whether the client login process has started/finished successfully
      * @type {boolean}
      */
-    this.loggedIn = false;
+    this.loggedIn = false; // ADDED: Track login success
     /**
      * Whether the client is running (intended to be connected)
      * @type {boolean}
@@ -92,6 +92,19 @@ export class InstagramClient extends EventEmitter {
      * @private
      */
     this._retryCount = 0;
+
+    // --- Add deduplication properties from OriginalInstagramBot.js ---
+    /**
+     * Set for tracking processed message IDs for deduplication
+     * @type {Set<string>}
+     */
+    this.processedMessageIds = new Set();
+    /**
+     * Maximum size of the processedMessageIds set to prevent memory leaks
+     * @type {number}
+     */
+    this.maxProcessedMessageIds = 1000;
+    // --- End deduplication properties ---
   }
 
   /**
@@ -156,10 +169,10 @@ export class InstagramClient extends EventEmitter {
           delete session.constants; // Clean up
           // Ensure directory exists (adapted from _saveCookies logic)
           const dir = path.dirname(this.options.sessionPath);
-          if (!fs.existsSync(dir)) {
-             fs.mkdirSync(dir, { recursive: true });
+          if (!existsSync(dir)) { // Use sync version for mkdir
+             mkdirSync(dir, { recursive: true });
           }
-          await fsPromises.writeFile(this.options.sessionPath, JSON.stringify(session, null, 2));
+          await fsPromises.writeFile(this.options.sessionPath, JSON.stringify(session, null, 2)); // Use fs.promises
           logger.info(`💾 Session.json saved/updated after cookie-based login at ${this.options.sessionPath}`);
 
         } catch (cookieValidationError) {
@@ -182,14 +195,14 @@ export class InstagramClient extends EventEmitter {
         logger.info(`✅ Fresh login successful as @${finalUsername}`);
         loginSuccess = true;
 
-        // Save session after fresh login
+        // Save session after fresh login - CRITICAL PART: Ensure correct serialization
         const session = await this.ig.state.serialize();
-        delete session.constants; // Clean up
+        delete session.constants; // Clean up like OriginalInstagramBot.js
         const dir = path.dirname(this.options.sessionPath);
-          if (!fs.existsSync(dir)) {
-             fs.mkdirSync(dir, { recursive: true });
-          }
-        await fsPromises.writeFile(this.options.sessionPath, JSON.stringify(session, null, 2));
+        if (!existsSync(dir)) { // Use sync version for mkdir
+           mkdirSync(dir, { recursive: true });
+        }
+        await fsPromises.writeFile(this.options.sessionPath, JSON.stringify(session, null, 2)); // Use fs.promises
         logger.info(`💾 Session.json saved after fresh login at ${this.options.sessionPath}`);
 
       } catch (loginError) {
@@ -242,6 +255,226 @@ export class InstagramClient extends EventEmitter {
     }
   }
 
+  // ... (rest of the class methods remain largely the same, but ensure they use this.ready and this.loggedIn where appropriate) ...
+
+  /**
+   * Setup realtime event handlers
+   * @private
+   */
+  _setupRealtimeHandlers() {
+    logger.info('📡 Setting up realtime handlers...');
+    // Main message handler
+    this.ig.realtime.on('message', async (data) => {
+      try {
+        if (!this.ready) { // Use 'ready' to check if fully initialized
+          this._eventsToReplay.push(['message', data]);
+          logger.debug('📨 Queued message event (not ready yet)');
+          return;
+        }
+        // Use the original bot's deduplication logic
+        if (!data.message || !this._isNewMessageById(data.message.item_id)) { // CHANGED: Use ID-based dedup
+          // logger.debug(`⚠️ Message ${data.message?.item_id} filtered as duplicate`);
+          return;
+        }
+        logger.debug('📨 Processing new message event');
+        await this._handleMessage(data.message, data);
+      } catch (error) {
+        logger.error('❌ Message handler error:', error.message);
+        logger.debug('Message handler error stack:', error.stack);
+      }
+    });
+    // Direct events handler
+    this.ig.realtime.on('direct', async (data) => {
+      try {
+        if (!this.ready) {
+          this._eventsToReplay.push(['direct', data]);
+          logger.debug('📨 Queued direct event (not ready yet)');
+          return;
+        }
+        if (data.message && this._isNewMessageById(data.message.item_id)) { // CHANGED: Use ID-based dedup
+           logger.debug('📨 Processing new direct event with message');
+          await this._handleMessage(data.message, data);
+        } else {
+             logger.debug('ℹ️ Processing direct event (non-message or duplicate)');
+             // Handle other direct events if needed
+             this.emit('directEvent', data); // Example: emit for non-message direct events
+        }
+      } catch (error) {
+        logger.error('❌ Direct handler error:', error.message);
+        logger.debug('Direct handler error stack:', error.stack);
+      }
+    });
+
+    // Connection events
+    this.ig.realtime.on('error', (error) => {
+      logger.error('🚨 Realtime error:', error.message);
+      this.emit('error', error);
+      if (this.options.autoReconnect && this._retryCount < this.options.maxRetries && this.running) {
+        this._attemptReconnect();
+      }
+    });
+    this.ig.realtime.on('close', () => {
+      logger.warn('🔌 Realtime connection closed');
+      this.ready = false; // Mark as not ready when connection closes
+      this.emit('disconnect');
+      if (this.running && this.options.autoReconnect) { // Only reconnect if intended to run
+        this._attemptReconnect();
+      }
+    });
+    // Debug events
+    this.ig.realtime.on('receive', (topic, messages) => {
+      const topicStr = String(topic || '');
+      if (topicStr.includes('direct') || topicStr.includes('message')) {
+        logger.debug(`📥 Realtime receive: ${topicStr}`);
+      }
+    });
+
+    // Add connect/reconnect handlers for better state management
+     this.ig.realtime.on('connect', () => {
+      logger.info('🔗 Realtime connection successfully established');
+      // this.ready is set to true in login after connect resolves
+    });
+
+    this.ig.realtime.on('reconnect', () => {
+      logger.info('🔁 Realtime client is attempting to reconnect');
+      this.ready = false; // Temporarily not ready during reconnect
+    });
+  }
+
+  // --- Deduplication Logic (Integrated from OriginalInstagramBot.js) ---
+  // Improved deduplication using message ID
+  _isNewMessageById(messageId) {
+    if (!messageId) {
+        logger.warn('⚠️ Attempted to check message ID, but ID was missing.');
+        return true; // Default to processing if ID is missing
+    }
+    if (this.processedMessageIds.has(messageId)) {
+        return false; // Already processed
+    }
+    // Add new ID to the set
+    this.processedMessageIds.add(messageId);
+    // Prevent memory leak by removing oldest IDs
+    if (this.processedMessageIds.size > this.maxProcessedMessageIds) {
+        // Simple FIFO removal of the first (oldest) entry
+        const first = this.processedMessageIds.values().next().value;
+        if (first !== undefined) {
+            this.processedMessageIds.delete(first);
+        }
+    }
+    return true; // It's new
+  }
+  // --- End Deduplication Logic ---
+
+  /**
+   * Load cookies from file (Adapted from OriginalInstagramBot.js)
+   * Handles loading from session.json (if it contains cookies) or cookies.json
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _loadCookies() {
+    let cookiesToLoad = [];
+    let sourceDescription = '';
+
+    // Strategy 1: Try loading cookies from the main session.json file (if it's the unified format)
+    try {
+        const sessionDataRaw = await fsPromises.readFile(this.options.sessionPath, 'utf-8');
+        const sessionData = JSON.parse(sessionDataRaw);
+        // Check if session.json has a cookies array directly (like the unified format)
+        if (Array.isArray(sessionData.cookies)) {
+            cookiesToLoad = sessionData.cookies;
+            sourceDescription = `session file (${this.options.sessionPath})`;
+            logger.debug(`🍪 Found ${cookiesToLoad.length} cookies in session.json`);
+        } else {
+            // If session.json exists but doesn't have cookies array, it might be the serialized state
+            // without cookies, or an old format. We'll try cookies.json next.
+            logger.debug(`📂 Session file found at ${this.options.sessionPath} but no cookies array found. Trying cookies.json...`);
+        }
+    } catch (sessionReadError) {
+        // session.json doesn't exist or is invalid JSON, try cookies.json
+        logger.debug(`📂 Session file not found or invalid at ${this.options.sessionPath}. Trying cookies.json...`);
+    }
+
+    // Strategy 2: If no cookies from session.json, try cookies.json
+    if (cookiesToLoad.length === 0) {
+        const cookiesPath = './cookies.json'; // Path used in OriginalInstagramBot.js
+        try {
+            await fsPromises.access(cookiesPath); // Use fs.promises
+            const cookiesRaw = await fsPromises.readFile(cookiesPath, 'utf-8'); // Use fs.promises
+            cookiesToLoad = JSON.parse(cookiesRaw);
+            sourceDescription = 'cookies.json';
+            logger.debug(`🍪 Found ${cookiesToLoad.length} cookies in cookies.json`);
+        } catch (cookiesError) {
+            // cookies.json doesn't exist or is invalid
+            logger.debug(`📂 cookies.json not found or invalid: ${cookiesError.message}`);
+            throw new Error('No valid cookies found in session.json or cookies.json');
+        }
+    }
+
+    // If we found cookies, load them into the IgApiClient state
+    if (cookiesToLoad.length > 0) {
+        let cookiesLoaded = 0;
+        for (const cookie of cookiesToLoad) {
+            // Ensure cookie object has the expected structure
+            if (!cookie.name || !cookie.value || !cookie.domain) {
+                logger.warn(`⚠️ Skipping invalid cookie structure: ${JSON.stringify(cookie)}`);
+                continue;
+            }
+            try {
+                const toughCookie = new tough.Cookie({
+                    key: cookie.name,
+                    value: cookie.value,
+                    domain: cookie.domain.replace(/^\./, ''), // Remove leading dot if present
+                    path: cookie.path || '/',
+                    secure: cookie.secure !== false, // Default to true if not explicitly false
+                    httpOnly: cookie.httpOnly !== false, // Default to true if not explicitly false
+                    // Add expires if available
+                    // expires: cookie.expires ? new Date(cookie.expires) : undefined
+                });
+
+                // Set the cookie in the jar
+                await this.ig.state.cookieJar.setCookie(
+                    toughCookie.toString(),
+                    `https://${toughCookie.domain}${toughCookie.path}`
+                );
+                cookiesLoaded++;
+            } catch (cookieProcessError) {
+                 logger.warn(`⚠️ Error processing cookie ${cookie.name}:`, cookieProcessError.message);
+                 // Continue with other cookies
+            }
+        }
+        logger.info(`🍪 Successfully loaded ${cookiesLoaded}/${cookiesToLoad.length} cookies from ${sourceDescription}`);
+        if (cookiesLoaded === 0) {
+             throw new Error('No cookies could be successfully loaded and set.');
+        }
+    } else {
+        // This case should ideally be caught by the throw above
+        throw new Error('No cookies available to load.');
+    }
+  }
+
+  /**
+   * Save cookies/state to file (Adapted from OriginalInstagramBot.js logic within login)
+   * This is now primarily handled within the main login flow after successful auth.
+   * Keeping this method for potential future use or manual saving.
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _saveCookies() {
+    try {
+      const state = await this.ig.state.serialize(); // includes cookies, device, etc.
+      // Ensure directory exists
+      const dir = path.dirname(this.options.sessionPath);
+      if (!existsSync(dir)) { // Use sync version for mkdir
+        mkdirSync(dir, { recursive: true });
+      }
+      await fsPromises.writeFile(this.options.sessionPath, JSON.stringify(state, null, 2)); // Use fs.promises
+      logger.info(`🍪 Saved cookies and state to ${this.options.sessionPath}`);
+    } catch (saveError) {
+       logger.error(`❌ Error saving cookies/state to ${this.options.sessionPath}:`, saveError.message);
+       logger.debug('Save cookies error stack:', saveError.stack);
+       // Don't throw, as this is usually a non-fatal error
+    }
+  }
 
   /**
    * Disconnect from Instagram
@@ -262,6 +495,7 @@ export class InstagramClient extends EventEmitter {
     }
     this.emit('disconnect');
   }
+
 
   /**
    * Create or get a user object

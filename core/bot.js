@@ -1,4 +1,5 @@
-import { Client } from './client.js';
+import Client from './client.js';
+
 import { ModuleManager } from './module-manager.js';
 import { MessageHandler } from './message-handler.js';
 import { logger } from '../utils/utils.js';

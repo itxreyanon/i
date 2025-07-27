@@ -1,5 +1,5 @@
-import Client from './client.js';
 
+import { InstagramClient } from './client.js';
 import { ModuleManager } from './module-manager.js';
 import { MessageHandler } from './message-handler.js';
 import { logger } from '../utils/utils.js';
@@ -10,7 +10,7 @@ export class InstagramBot {
      * Enhanced Instagram client
      * @type {InstagramClient}
      */
-    this.client = new Client();
+    this.client = new InstagramClient();
     
     /**
      * Module manager for dynamic module loading
@@ -31,15 +31,6 @@ export class InstagramBot {
     this.running = false;
     
     this._setupEventHandlers();
-this.client.on('checkpoint', async () => {
-  logger.warn('⚠️ Checkpoint required');
-  await this.handleCheckpoint();
-});
-
-this.client.on('2fa', async () => {
-  logger.warn('⚠️ 2FA required');
-  await this.handleTwoFactor();
-});
   }
 
   /**
@@ -72,28 +63,27 @@ this.client.on('2fa', async () => {
    * @param {string} password - Instagram password
    * @returns {Promise<void>}
    */
-async login(username, password) {
-  try {
-    if (!username || !password) { // Make sure password check is correct
-      throw new Error('❌ Username or password not provided to InstagramBot.login');
+  async login() {
+    try {
+      const username = process.env.INSTAGRAM_USERNAME;
+      const password = process.env.INSTAGRAM_PASSWORD;
+
+      logger.info('🔑 Starting Instagram bot login...');
+      
+      // Login to Instagram
+      await this.client.login(username, password);
+      
+      // Load modules
+      await this.moduleManager.init()
+      
+      this.running = true;
+      logger.info('✅ Instagram bot is ready and running');
+
+    } catch (error) {
+      logger.error('❌ Failed to start bot:', error.message);
+      throw error;
     }
-
-    logger.info('🔑 Starting Instagram bot login...');
-    
-    // Login to Instagram - Pass the password
-    await this.client.login(username, password); // <-- Make sure password is passed
-    
-    // Load modules
-    await this.moduleManager.init();
-    
-    this.running = true;
-    logger.info('✅ Instagram bot is ready and running');
-
-  } catch (error) {
-    logger.error('❌ Failed to start bot:', error.message);
-    throw error;
   }
-}
 
   /**
    * Send a message to a thread

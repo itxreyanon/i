@@ -243,7 +243,7 @@ export class InstagramClient extends EventEmitter {
        // Don't throw, as this is usually a non-fatal error for immediate functionality
        // But it might cause issues on next restart if session wasn't saved.
     }
-
+  }
   /**
    * Disconnect from Instagram
    * @returns {Promise<void>}

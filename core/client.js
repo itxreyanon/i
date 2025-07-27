@@ -1,19 +1,22 @@
+// client.js (Updated with login logic from instagram-bot.js - Knowledge Base File 2)
+
 import { IgApiClient } from 'instagram-private-api';
 import { withRealtime } from 'instagram_mqtt';
 import { EventEmitter } from 'events';
-import fs from 'fs'; // Keep original fs for sync operations used in code 3
-import { promises as fsPromises } from 'fs'; // Add fs.promises for async operations like in code 2
+// Use fs.promises for consistency with instagram-bot.js (Knowledge Base File 2)
+import { promises as fsPromises } from 'fs'; // CHANGED: Use fs.promises
+import fs from 'fs'; // Keep original fs for sync operations if needed
 import tough from 'tough-cookie';
 import { Collection } from '@discordjs/collection';
 import User from '../utils/User.js';
 import Chat from '../utils/Chat.js';
 import Message from '../utils/Message.js';
 import { logger } from '../utils/utils.js';
+import path from 'path'; // Import path module
 import camelcaseKeys from 'camelcase-keys'; // Import for push notification parsing (from code 2)
-import { config } from '../config.js';
-import path from 'path';
+
 /**
- * Enhanced Instagram client with rich object support and robust login logic from instagram-bot.js
+ * Enhanced Instagram client with rich object support and robust login from instagram-bot.js
  * @extends {EventEmitter}
  */
 export class InstagramClient extends EventEmitter {
@@ -25,11 +28,13 @@ export class InstagramClient extends EventEmitter {
      */
     this.options = {
       disableReplyPrefix: false,
-      sessionPath: './session/session.json', // Keep original path from code 3
+      // Align session path default with instagram-bot.js structure (Knowledge Base File 2)
+      sessionPath: './session.json', // CHANGED: Default to session.json like instagram-bot.js
       messageCheckInterval: 5000,
       maxRetries: 3,
       autoReconnect: true,
-      username: null, // Add username/password options like in code 2
+      // Allow passing username/password via options if desired
+      username: null,
       password: null,
       ...options
     };
@@ -49,6 +54,11 @@ export class InstagramClient extends EventEmitter {
      */
     this.ready = false;
     /**
+     * Whether the client login process has started/finished successfully
+     * @type {boolean}
+     */
+    this.loggedIn = false; // ADDED: Track login success (from updated code 1 logic)
+    /**
      * Whether the client is running (intended to be connected)
      * @type {boolean}
      */
@@ -64,7 +74,7 @@ export class InstagramClient extends EventEmitter {
       messages: new Collection()
     };
     /**
-     * Last message check timestamp (legacy timestamp-based dedup)
+     * Last message check timestamp (if used for alternative dedup)
      * @type {Date}
      */
     this.lastMessageCheck = new Date(Date.now() - 60000);
@@ -80,7 +90,7 @@ export class InstagramClient extends EventEmitter {
      * @private
      */
     this._retryCount = 0;
-    // --- Add deduplication properties from code 2 ---
+    // --- Add deduplication properties from instagram-bot.js (Knowledge Base File 2) ---
     /**
      * Set for tracking processed message IDs for deduplication
      * @type {Set<string>}
@@ -91,117 +101,228 @@ export class InstagramClient extends EventEmitter {
      * @type {number}
      */
     this.maxProcessedMessageIds = 1000;
-    // --- Store for push notification context (from code 2) ---
+    // --- Store for push notification context (from instagram-bot.js - Knowledge Base File 2) ---
     this.pushContext = {}; // Store thread_id, item_id, etc. from push notifications
     // --- End push context ---
   }
 
   /**
    * Robust Login to Instagram using session, cookies, or password
-   * Adapted EXCLUSIVELY from the login logic in instagram-bot.js (code 2)
+   * Adapted EXCLUSIVELY from the login logic in instagram-bot.js (Knowledge Base File 2)
    * @param {string} [username] - Instagram username (can also be in options)
    * @param {string} [password] - Instagram password (can also be in options)
    * @returns {Promise<void>}
    */
- async login(username, password) { // Accept password as argument
+  async login(username, password) {
     try {
-      logger.info('🔑 Logging into Instagram...');
-      this.ig.state.generateDevice(username);
+      // Use provided args, then options (like code 2)
+      const finalUsername = username || this.options.username;
+      const finalPassword = password || this.options.password;
 
-      let loginSuccessful = false;
+      if (!finalUsername) {
+        throw new Error('❌ INSTAGRAM_USERNAME is missing');
+      }
+      // Password is only required if session/cookies fail and fresh login is attempted
+      // Final password check happens later (like code 2)
 
-      // Try to load session first (the file specified in options)
+      logger.info(`🔑 Attempting login for @${finalUsername}...`);
+      this.ig.state.generateDevice(finalUsername);
+
+      let loginSuccess = false; // Flag to track successful login path (like code 2)
+
+      // Step 1: Try session.json first (adapted from code 2, using fs.promises)
+      // Use the sessionPath from this.options (which defaults to './session.json' like code 2)
+      const sessionPath = this.options.sessionPath;
       try {
-        if (fs.existsSync(this.options.sessionPath)) { // Check if sessionPath file exists
-          logger.info(`📂 Attempting login using session file: ${this.options.sessionPath}`);
-          const sessionDataRaw = await fsPromises.readFile(this.options.sessionPath, 'utf-8');
-          const sessionData = JSON.parse(sessionDataRaw);
-          await this.ig.state.deserialize(sessionData);
+        await fsPromises.access(sessionPath); // Use fs.promises like code 2
+        logger.info(`📂 Found session file at ${sessionPath}, trying to login from session...`);
+        const sessionData = JSON.parse(await fsPromises.readFile(sessionPath, 'utf-8')); // Use fs.promises like code 2
+        await this.ig.state.deserialize(sessionData);
 
-          // --- CRITICAL: Validate the loaded session ---
-          await this.ig.account.currentUser();
-          logger.info('✅ Logged in using saved session file');
-          loginSuccessful = true;
-        } else {
-           logger.info(`📂 Session file not found at ${this.options.sessionPath}, attempting fresh login...`);
+        // --- Add specific error handling for currentUser() (from code 2) ---
+        try {
+          await this.ig.account.currentUser(); // Validate session
+          logger.info('✅ Logged in from session file');
+          loginSuccess = true;
+        } catch (validationError) {
+          logger.warn('⚠️ Session validation failed:', validationError.message);
+          // Fall through to cookie login if session is invalid (like code 2)
         }
-      } catch (sessionError) {
-        logger.warn(`⚠️ Failed to load or validate session from ${this.options.sessionPath}:`, sessionError.message);
-        // Fall through to fresh login
+        // --- End addition ---
+      } catch (sessionAccessError) {
+        logger.info(`📂 Session file not found or invalid at ${sessionPath}, trying cookies.json...`, sessionAccessError.message);
+        // Fall through to cookie login if session file access fails (like code 2)
       }
 
-      // If session login failed, attempt fresh login
-      if (!loginSuccessful) {
-        if (!password) { // Check if password was provided
-          throw new Error('❌ Password required for fresh login, but not provided.');
+      // Step 2: Try cookies.json if session login wasn't successful (from code 2)
+      if (!loginSuccess) {
+        try {
+          logger.info('📂 Attempting login using cookies.json...');
+          await this._loadCookiesFromJson('./cookies.json'); // Use dedicated method like code 2
+          try {
+            const currentUserResponse = await this.ig.account.currentUser();
+            logger.info(`✅ Logged in using cookies.json as @${currentUserResponse.username}`);
+            loginSuccess = true;
+            // Save session after successful cookie login (like code 2)
+            const session = await this.ig.state.serialize();
+            delete session.constants;
+            await fsPromises.writeFile(sessionPath, JSON.stringify(session, null, 2)); // Use fs.promises like code 2
+            logger.info(`💾 Session file saved from cookie-based login to ${sessionPath}`);
+          } catch (cookieValidationError) {
+            logger.error('❌ Failed to validate login using cookies.json:', cookieValidationError.message);
+            logger.debug('Cookie validation error stack:', cookieValidationError.stack);
+            // Continue to fresh login
+          }
+        } catch (cookieLoadError) {
+          logger.error('❌ Failed to load or process cookies.json:', cookieLoadError.message);
+          logger.debug('Cookie loading error stack:', cookieLoadError.stack);
+          // Continue to fresh login
         }
-        logger.info('🔑 Attempting fresh login...');
-        await this.ig.account.login(username, password);
-
-        // --- CRITICAL: Save the FULL session state AFTER successful fresh login ---
-        // Ensure directory exists for sessionPath
-        const sessionDir = path.dirname(this.options.sessionPath);
-        if (!fs.existsSync(sessionDir)) {
-          fs.mkdirSync(sessionDir, { recursive: true });
-        }
-        const session = await this.ig.state.serialize(); // Serialize the full state
-        // DO NOT delete session.constants; // Keep all data including cookies
-        await fsPromises.writeFile(this.options.sessionPath, JSON.stringify(session, null, 2)); // Save full state using fs.promises
-        logger.info(`✅ Fresh login successful. Full session state saved to ${this.options.sessionPath}`);
-        loginSuccessful = true;
-         // --- No separate _saveCookies call needed, session.json has everything ---
       }
 
-      if (loginSuccessful) {
-        // Get user info
+      // Step 3: Fallback to fresh login using username & password if previous methods failed (from code 2)
+      if (!loginSuccess) {
+        // Check if password is available for fresh login (like code 2)
+        if (!finalPassword) {
+             logger.warn('⚠️ No password provided for fresh login attempt.');
+             throw new Error('No valid login method succeeded (session or cookies) and password is not available for fresh login.');
+        }
+        try {
+          logger.info('🔐 Attempting fresh login with username and password...');
+          await this.ig.account.login(finalUsername, finalPassword);
+          logger.info(`✅ Fresh login successful as @${finalUsername}`);
+          loginSuccess = true;
+          // Save session after successful fresh login (like code 2)
+          const session = await this.ig.state.serialize();
+          delete session.constants;
+          await fsPromises.writeFile(sessionPath, JSON.stringify(session, null, 2)); // Use fs.promises like code 2
+          logger.info(`💾 Session file saved after fresh login to ${sessionPath}`);
+        } catch (loginError) {
+          logger.error('❌ Fresh login failed:', loginError.message);
+          logger.debug('Fresh login error stack:', loginError.stack);
+          throw new Error(`Fresh login failed: ${loginError.message}`);
+        }
+      }
+
+      if (loginSuccess) {
+        // --- Complete login setup AFTER successful authentication (like code 2) ---
+        // Initialize user
         const userInfo = await this.ig.account.currentUser();
         this.user = this._patchOrCreateUser(userInfo.pk, userInfo);
+        logger.info(`👤 Bot user initialized: @${this.user.username}`);
 
-        // Load existing chats
+        // Load chats with delay (keep original delay from Knowledge Base File 1)
+        await new Promise(resolve => setTimeout(resolve, 1000));
         await this._loadChats();
 
-        // Setup realtime handlers
-        this._setupRealtimeHandlers();
+        // Setup realtime handlers (call the existing method, but update it)
+        this._setupRealtimeHandlers(); // Register handlers
 
-        // Connect to realtime
+        // Connect to realtime service (similar structure to code 2)
         logger.info('📡 Connecting to Instagram realtime service...');
         await this.ig.realtime.connect({
-          autoReconnect: this.options.autoReconnect,
-          irisData: await this.ig.feed.directInbox().request()
+          // Add graphQlSubs and skywalkerSubs like code 2 for full features if needed
+          // graphQlSubs: [...],
+          // skywalkerSubs: [...],
+          irisData: await this.ig.feed.directInbox().request(),
+          connectOverrides: {},
+          // Add proxy options if needed like code 2
+          // socksOptions: this.options.proxy ? { ... } : undefined,
         });
+        logger.info('📡 Realtime connection established');
 
-        this.ready = true;
+        // --- Update state flags (like code 2 and updated Knowledge Base File 1 logic) ---
+        this.loggedIn = true; // Set loggedIn flag
+        this.ready = true; // Mark as fully ready after connection
         this.running = true;
-        this._retryCount = 0;
-        logger.info(`✅ Connected as @${this.user.username} (ID: ${this.user.id})`);
+
+        logger.info(`🚀 Successfully logged in and connected as @${this.user.username}`);
         this.emit('ready');
 
-        // Replay queued events
+        // Replay queued events if any (keep original logic from Knowledge Base File 1)
         this._replayEvents();
 
+        // --- End registration and connection ---
       } else {
-         throw new Error('Login process did not complete successfully.');
+        throw new Error('No valid login method succeeded (session or cookies).');
       }
-
     } catch (error) {
+      logger.error('❌ Failed to initialize bot:', error.message);
+      logger.debug('Initialization error stack:', error.stack); // Log stack trace (like code 2)
+
       this.ready = false;
-      this.running = false;
-      logger.error('❌ Login failed:', error.message);
-      logger.debug('Login error stack:', error.stack);
-      throw error;
+      this.loggedIn = false; // Ensure loggedIn is false on failure
+      this.running = false; // Ensure running is false on failure (like code 2)
+
+      // --- More specific error re-throwing (like code 2) ---
+      if (error.message.includes('login') || error.message.includes('cookie') || error.message.includes('session')) {
+        throw error; // Re-throw login/cookie/session specific errors
+      } else {
+        // Wrap unexpected errors
+        throw new Error(`Unexpected error during initialization: ${error.message}`);
+      }
+      // --- End specific error re-throwing ---
     }
   }
 
   /**
-   * Load cookies from file (Simplified to only use session.json)
+   * Load cookies from cookies.json file (Adapted from instagram-bot.js - Knowledge Base File 2)
+   * @param {string} path - Path to the cookies.json file
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _loadCookiesFromJson(path = './cookies.json') {
+    try {
+      // Use fs.promises.readFile (consistent with instagram-bot.js - Knowledge Base File 2)
+      const raw = await fsPromises.readFile(path, 'utf-8');
+      const cookies = JSON.parse(raw);
+      let cookiesLoaded = 0;
+      for (const cookie of cookies) {
+        // Ensure cookie object has the expected structure (robustness from code 2)
+        if (!cookie.name || !cookie.value || !cookie.domain) {
+            logger.warn(`⚠️ Skipping invalid cookie structure: ${JSON.stringify(cookie)}`);
+            continue;
+        }
+
+        const toughCookie = new tough.Cookie({
+          key: cookie.name,
+          value: cookie.value,
+          domain: cookie.domain.replace(/^\./, ''),
+          path: cookie.path || '/',
+          secure: cookie.secure !== false,
+          httpOnly: cookie.httpOnly !== false,
+          // Add expires if available in your cookie format
+          // expires: cookie.expires ? new Date(cookie.expires) : undefined
+        });
+
+        // Use fs.promises for setCookie if needed (ensure URL format is correct) (like code 2)
+        await this.ig.state.cookieJar.setCookie(
+          toughCookie.toString(),
+          `https://${toughCookie.domain}${toughCookie.path}`
+        );
+        cookiesLoaded++;
+      }
+      logger.info(`🍪 Successfully loaded ${cookiesLoaded}/${cookies.length} cookies from file ${path}`);
+    } catch (error) {
+      logger.error(`❌ Critical error loading cookies from ${path}:`, error.message);
+      logger.debug(`Cookie loading error details:`, error.stack);
+      throw error; // Re-throw to stop the login process (consistent with code 2)
+    }
+  }
+
+  /**
+   * Load cookies from file (Updated to use _loadCookiesFromJson if needed)
+   * This method is kept for compatibility with the original Knowledge Base File 1 structure,
+   * but the primary cookie loading logic is now in _loadCookiesFromJson.
+   * It will try to load from session.json (serialized state) first, then fallback to _loadCookiesFromJson.
    * @returns {Promise<void>}
    * @private
    */
   async _loadCookies() {
-    // --- ONLY load from the main session.json file ---
+    // --- Prioritize loading from the main session.json file (serialized state) ---
     const sessionPath = this.options.sessionPath; // Use the configured path
     try {
-      logger.debug(`📂 Attempting to load session/cookies from ${sessionPath}...`);
+      logger.debug(`📂 Attempting to load session/cookies from ${sessionPath} (serialized state)...`);
       await fsPromises.access(sessionPath); // Use fs.promises
       const sessionDataRaw = await fsPromises.readFile(sessionPath, 'utf-8'); // Use fs.promises
       const sessionData = JSON.parse(sessionDataRaw);
@@ -210,40 +331,55 @@ export class InstagramClient extends EventEmitter {
       // This should correctly populate ig.state.cookieJar if the session data is complete
       await this.ig.state.deserialize(sessionData);
       logger.info(`🍪 Session and cookies loaded from ${sessionPath} using state.deserialize`);
-      // --- End loading from session.json ---
+      return; // Successfully loaded from session.json
     } catch (error) {
       logger.debug(`📂 Failed to load/parse session from ${sessionPath}:`, error.message);
-      throw error; // Re-throw to let the login function handle it (e.g., trigger fresh login)
+      // Continue to fallback logic
     }
+
+    // --- Fallback: Try loading from cookies.json using the new method ---
+    try {
+        logger.info('📂 Fallback: Attempting login using cookies.json (via _loadCookiesFromJson)...');
+        await this._loadCookiesFromJson('./cookies.json');
+        // Note: If this succeeds, the caller (login method) should validate with currentUser
+        // and potentially save the session. We don't do it here to mirror code 2's flow.
+        logger.info('🍪 Fallback: Loaded cookies from cookies.json');
+    } catch (fallbackError) {
+       logger.info('📂 Fallback: cookies.json also not found or invalid.', fallbackError.message);
+       // Re-throw the error from the primary session load attempt, or a generic one
+       throw error || new Error(`No valid session or cookies found at ${sessionPath} or ./cookies.json`);
+    }
+    // --- End fallback logic ---
   }
 
+
   /**
-   * Save cookies to file (Simplified to only save session.json)
+   * Save cookies to file (Updated to use fs.promises and path.dirname correctly)
    * @returns {Promise<void>}
    * @private
    */
   async _saveCookies() {
-    // --- ONLY save to the main session.json file ---
-    const sessionPath = this.options.sessionPath; // Use the configured path
-    try {
-      // Ensure directory exists for sessionPath
-      const sessionDir = path.dirname(sessionPath);
-      if (!fs.existsSync(sessionDir)) {
-        fs.mkdirSync(sessionDir, { recursive: true });
-      }
-
-      const session = await this.ig.state.serialize(); // Serialize the full state
-      // DO NOT delete session.constants; // Keep all data including cookies
-      await fsPromises.writeFile(sessionPath, JSON.stringify(session, null, 2)); // Save full state using fs.promises
-      logger.info(`🍪 Full session state saved to ${sessionPath}`);
-      // --- End saving to session.json ---
-    } catch (error) {
-       logger.error(`❌ Error saving session to ${sessionPath}:`, error.message);
-       logger.debug('Save session error stack:', error.stack);
-       // Don't throw, as this is usually a non-fatal error for immediate functionality
-       // But it might cause issues on next restart if session wasn't saved.
+    // Keep original path logic from Knowledge Base File 1, but use sessionPath
+    const cookiePath = this.options.sessionPath.replace('.json', '_cookies.json');
+    const cookies = await this.ig.state.cookieJar.getCookies('https://instagram.com');
+    const cookieData = cookies.map(cookie => ({
+      name: cookie.key,
+      value: cookie.value,
+      domain: cookie.domain,
+      path: cookie.path,
+      secure: cookie.secure,
+      httpOnly: cookie.httpOnly
+    }));
+    // Ensure directory exists (use fs for sync mkdir, path for dirname)
+    const dir = path.dirname(cookiePath); // Use path.dirname, NOT require('path').dirname
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
     }
+    // Use fs.promises.writeFile (like code 2 and updated Knowledge Base File 1)
+    await fsPromises.writeFile(cookiePath, JSON.stringify(cookieData, null, 2));
+    logger.info(`🍪 Saved ${cookieData.length} cookies`);
   }
+
   /**
    * Disconnect from Instagram
    * @returns {Promise<void>}
@@ -252,6 +388,7 @@ export class InstagramClient extends EventEmitter {
     logger.info('🔌 Disconnecting from Instagram...');
     this.running = false;
     this.ready = false;
+    this.loggedIn = false; // Update state
     // --- Clear Push Context on Disconnect (from code 2) ---
     this.pushContext = {}; // Clear push context on disconnect
     logger.debug('🧹 [Push] Cleared push context on disconnect.');
@@ -495,7 +632,7 @@ export class InstagramClient extends EventEmitter {
       }
     });
 
-    // --- Debug events (keep original logic from code 3, but log connect/reconnect like code 2) ---
+    // --- Debug events (keep original logic from Knowledge Base File 1, but log connect/reconnect like code 2) ---
     this.ig.realtime.on('receive', (topic, messages) => {
       const topicStr = String(topic || '');
       if (topicStr.includes('direct') || topicStr.includes('message')) {
@@ -551,7 +688,7 @@ export class InstagramClient extends EventEmitter {
   // --- End Deduplication Logic ---
 
   /**
-   * Check if message is new (timestamp-based - original logic from code 3)
+   * Check if message is new (timestamp-based - original logic)
    * @param {Object} message - Message data
    * @returns {boolean}
    * @private
@@ -608,7 +745,7 @@ export class InstagramClient extends EventEmitter {
    * @private
    */
   async _attemptReconnect() {
-    // Add check for running state like updated code 3 logic
+    // Add check for running state like updated Knowledge Base File 1 logic
     if (!this.running) {
        logger.info('🔄 Reconnect attempt skipped (client is not marked as running)');
        return;
@@ -617,7 +754,7 @@ export class InstagramClient extends EventEmitter {
     const delay = Math.min(1000 * Math.pow(2, this._retryCount), 30000);
     logger.info(`🔄 Attempting reconnect ${this._retryCount}/${this.options.maxRetries} in ${delay}ms...`);
     setTimeout(async () => {
-      // Double-check before attempting like updated code 3 logic
+      // Double-check before attempting like updated Knowledge Base File 1 logic
       if (!this.running) {
           logger.info('🔄 Reconnect attempt cancelled (client is no longer running)');
           return;
@@ -628,7 +765,7 @@ export class InstagramClient extends EventEmitter {
           irisData: await this.ig.feed.directInbox().request()
         });
         this._retryCount = 0;
-        this.ready = true; // Mark as ready again like updated code 3 logic
+        this.ready = true; // Mark as ready again like updated Knowledge Base File 1 logic
         logger.info('✅ Reconnected successfully');
       } catch (error) {
         logger.error('❌ Reconnect failed:', error.message);
@@ -645,7 +782,7 @@ export class InstagramClient extends EventEmitter {
    * @private
    */
   _replayEvents() {
-    // Keep original replay logic from code 3, but use the new realtime emit mechanism
+    // Keep original replay logic from Knowledge Base File 1, but use the new realtime emit mechanism
     logger.info(`🔁 Replaying ${this._eventsToReplay.length} queued events...`);
     for (const [eventType, data] of this._eventsToReplay) {
       if (eventType === 'message') {
@@ -660,8 +797,6 @@ export class InstagramClient extends EventEmitter {
   }
 
 
-
-
   /**
    * Get client statistics
    * @returns {Object}
@@ -669,6 +804,7 @@ export class InstagramClient extends EventEmitter {
   getStats() {
     return {
       ready: this.ready,
+      loggedIn: this.loggedIn, // Added loggedIn state
       running: this.running,
       users: this.cache.users.size,
       chats: this.cache.chats.size,
@@ -687,6 +823,7 @@ export class InstagramClient extends EventEmitter {
   toJSON() {
     return {
       ready: this.ready,
+      loggedIn: this.loggedIn, // Added loggedIn state
       running: this.running,
       userId: this.user?.id,
       username: this.user?.username,

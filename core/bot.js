@@ -74,14 +74,14 @@ this.client.on('2fa', async () => {
    */
 async login(username, password) {
   try {
-    if (!username || !password) {
+    if (!username || !password) { // Make sure password check is correct
       throw new Error('❌ Username or password not provided to InstagramBot.login');
     }
 
     logger.info('🔑 Starting Instagram bot login...');
     
-    // Login to Instagram
-    await this.client.login(username, password);
+    // Login to Instagram - Pass the password
+    await this.client.login(username, password); // <-- Make sure password is passed
     
     // Load modules
     await this.moduleManager.init();

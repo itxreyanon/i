@@ -265,6 +265,7 @@ export class MessageCollector extends EventEmitter {
     };
   }
 }
+export default MessageCollector;
 
 /**
  * Emitted when a message is collected

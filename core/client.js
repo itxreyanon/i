@@ -104,20 +104,21 @@ export class InstagramClient extends EventEmitter {
       this.ig.state.generateDevice(username);
 
       // Try to load cookies first
-      try {
-        await this._loadCookies();
-        await this.ig.account.currentUser();
-        logger.info('✅ Logged in using saved cookies');
-      } catch (error) {
-        if (!password) {
-          throw new Error('❌ Password required for fresh login');
-        }
-        
-        logger.info('🔑 Attempting fresh login...');
-        await this.ig.account.login(username, password);
-        await this._saveCookies();
-        logger.info('✅ Fresh login successful');
-      }
+try {
+  await this._loadCookies();
+  //await this.ig.account.currentUser(); // REMOVE or comment this line
+  logger.info('✅ Logged in using saved cookies');
+} catch (error) {
+  if (!password) {
+    throw new Error('❌ Password required for fresh login');
+  }
+
+  logger.info('🔑 Attempting fresh login...');
+  await this.ig.account.login(username, password);
+  await this._saveCookies();
+  logger.info('✅ Fresh login successful');
+}
+
 
       // Get user info
       const userInfo = await this.ig.account.currentUser();

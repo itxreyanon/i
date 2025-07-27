@@ -4,11 +4,11 @@ import { EventEmitter } from 'events';
 
 
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import Collection from './structures/Collection.js';
-import ClientUser from './structures/ClientUser.js';
-import Message from './structures/Message.js';
-import Chat from './structures/Chat.js';
-import User from './structures/User.js';
+import Collection from '.'/structures/Collection.js';
+import ClientUser from '../structures/ClientUser.js';
+import Message from '../structures/Message.js';
+import Chat from '../structures/Chat.js';
+import User from '../structures/User.js';
 import Logger from '../utils/Util.js';
 
 

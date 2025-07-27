@@ -56,4 +56,4 @@ class Util {
     }
 }
 
-module.exports = Util
+export default Util;

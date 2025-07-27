@@ -1,7 +1,7 @@
 import { withRealtime, withFbns, withFbnsAndRealtime } from 'instagram_mqtt';
 import { IgApiClient } from 'instagram-private-api';
 import { EventEmitter } from 'events';
-import Collection from './structures/Collection.js'; // Add .js extension for local modules in ESM
+import Collection from '../structures/Collection.js'; // Add .js extension for local modules in ESM
 
 import {
   existsSync,

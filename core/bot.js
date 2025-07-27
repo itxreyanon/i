@@ -244,3 +244,4 @@ if (process.argv[1] && process.argv[1].endsWith('bot.js')) { // Adjust filename 
 // If you still want to export something (though main execution handles instantiation)
 // You could export the setup logic or the client instance getter if needed elsewhere
 // export { main as runBot }; // Example export
+exoirt default InstagramBot;

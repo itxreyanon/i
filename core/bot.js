@@ -31,8 +31,17 @@ export class InstagramBot {
     this.running = false;
     
     this._setupEventHandlers();
-  }
 
+  }
+this.client.on('checkpoint', async () => {
+  logger.warn('⚠️ Checkpoint required');
+  await this.handleCheckpoint();
+});
+
+this.client.on('2fa', async () => {
+  logger.warn('⚠️ 2FA required');
+  await this.handleTwoFactor();
+});
   /**
    * Setup event handlers for the client
    * @private

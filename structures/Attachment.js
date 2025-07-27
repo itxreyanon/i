@@ -302,3 +302,4 @@ export class Attachment {
     };
   }
 }
+export default Attachment;

@@ -1,15 +1,22 @@
-// client.js
-const { withRealtime, withFbns, withFbnsAndRealtime } = require('instagram_mqtt');
-const { IgApiClient } = require('instagram-private-api');
-const { EventEmitter } = require('events');
-const Collection = require('./structures/Collection');
-const { existsSync, readFileSync, writeFileSync, promises as fsPromises } = require('fs'); // Added fsPromises
-const tough = require('tough-cookie'); // Added tough-cookie import
-const ClientUser = require('./structures/ClientUser');
-const Message = require('./structures/Message');
-const Chat = require('./structures/Chat');
-const User = require('./structures/User');
-const Util = require('./utils/utils'); // Adjusted path
+import { withRealtime, withFbns, withFbnsAndRealtime } from 'instagram_mqtt';
+import { IgApiClient } from 'instagram-private-api';
+import { EventEmitter } from 'events';
+import Collection from './structures/Collection.js'; // Add .js extension for local modules in ESM
+
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  promises as fsPromises
+} from 'fs';
+
+import tough from 'tough-cookie'; // Default import (depends on the package export style)
+
+import ClientUser from './structures/ClientUser.js';
+import Message from './structures/Message.js';
+import Chat from './structures/Chat.js';
+import User from './structures/User.js';
+import Util from './utils/utils.js'; // If utils exports multiple named exports
 
 /**
  * Enhanced Instagram client with improved functionality
@@ -597,4 +604,4 @@ class Client extends EventEmitter {
     }
 }
 
-module.exports = Client;
+export default Client;

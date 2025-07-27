@@ -9,7 +9,7 @@ import ClientUser from '../structures/ClientUser.js';
 import Message from '../structures/Message.js';
 import Chat from '../structures/Chat.js';
 import User from '../structures/User.js';
-import Logger from '../utils/Util.js';
+import Logger from '../utils/Utils.js';
 
 
 /**

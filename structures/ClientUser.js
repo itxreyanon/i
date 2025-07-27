@@ -1,4 +1,4 @@
-import { User } from './User';
+import User from './User.js';
 
 /**
  * Represents the logged in client's Instagram user.

@@ -2,8 +2,7 @@
 import { ModuleManager } from './module-manager.js';
 import { MessageHandler } from './message-handler.js';
 import { config } from '../config.js';
-// Import the new Client class
-import { Client } from './client.js'; // Adjust path if client.js is in a different directory
+import Client from './client.js'; // ✅ Default import
 
 // Main execution logic
 async function main() {

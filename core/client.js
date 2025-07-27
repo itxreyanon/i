@@ -4,9 +4,9 @@ import { EventEmitter } from 'events';
 import fs from 'fs';
 import tough from 'tough-cookie';
 import { Collection } from '@discordjs/collection';
-import { User } from '../utils/User.js';
-import { Chat } from '../utils/Chat.js';
-import { Message } from '../utils/Message.js';
+import  User from '../utils/User.js';
+import  Chat  from '../utils/Chat.js';
+import  Message  from '../utils/Message.js';
 import { logger } from '../utils/utils.js';
 
 /**

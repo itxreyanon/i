@@ -8,6 +8,11 @@ import  User from '../utils/User.js';
 import  Chat  from '../utils/Chat.js';
 import  Message  from '../utils/Message.js';
 import { logger } from '../utils/utils.js';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 /**
  * Enhanced Instagram client with rich object support
@@ -505,7 +510,8 @@ export class InstagramClient extends EventEmitter {
     }));
 
     // Ensure directory exists
-    const dir = require('path').dirname(cookiePath);
+    const dir = path.dirname(cookiePath);
+
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }

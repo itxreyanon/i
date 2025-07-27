@@ -63,27 +63,28 @@ export class InstagramBot {
    * @param {string} password - Instagram password
    * @returns {Promise<void>}
    */
-  async login() {
-    try {
-      const username = process.env.INSTAGRAM_USERNAME;
-      const password = process.env.INSTAGRAM_PASSWORD;
-
-      logger.info('🔑 Starting Instagram bot login...');
-      
-      // Login to Instagram
-      await this.client.login(username, password);
-      
-      // Load modules
-      await this.moduleManager.init()
-      
-      this.running = true;
-      logger.info('✅ Instagram bot is ready and running');
-
-    } catch (error) {
-      logger.error('❌ Failed to start bot:', error.message);
-      throw error;
+async login(username, password) {
+  try {
+    if (!username || !password) {
+      throw new Error('❌ Username or password not provided to InstagramBot.login');
     }
+
+    logger.info('🔑 Starting Instagram bot login...');
+    
+    // Login to Instagram
+    await this.client.login(username, password);
+    
+    // Load modules
+    await this.moduleManager.init();
+    
+    this.running = true;
+    logger.info('✅ Instagram bot is ready and running');
+
+  } catch (error) {
+    logger.error('❌ Failed to start bot:', error.message);
+    throw error;
   }
+}
 
   /**
    * Send a message to a thread

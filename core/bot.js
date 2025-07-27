@@ -4,8 +4,6 @@ import { MessageHandler } from './message-handler.js';
 import { config } from '../config.js';
 // Import the new Client class
 import { Client } from './client.js'; // Adjust path if client.js is in a different directory
-import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { promises as fsPromises } from 'fs';
 
 // Main execution logic
 async function main() {

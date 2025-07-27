@@ -2,13 +2,13 @@ import { withRealtime, withFbns, withFbnsAndRealtime } from 'instagram_mqtt';
 import { IgApiClient } from 'instagram-private-api';
 import { EventEmitter } from 'events';
 
-import Collection from './Collection.js';
-import { existsSync, readFileSync, writeFileSync } from 'fs';
 
-import ClientUser from './ClientUser.js';
-import Message from './Message.js';
-import Chat from './Chat.js';
-import User from './User.js';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
+import Collection from './structures/Collection.js';
+import ClientUser from './structures/ClientUser.js';
+import Message from './structures/Message.js';
+import Chat from './structures/Chat.js';
+import User from './structures/User.js';
 import Logger from '../utils/Util.js';
 
 

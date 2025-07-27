@@ -10,7 +10,7 @@ import Chat from '../utils/Chat.js';
 import Message from '../utils/Message.js';
 import { logger } from '../utils/utils.js';
 import camelcaseKeys from 'camelcase-keys'; // Import for push notification parsing (from code 2)
-
+import { config } from '../config.js';
 /**
  * Enhanced Instagram client with rich object support and robust login logic from instagram-bot.js
  * @extends {EventEmitter}
@@ -171,10 +171,10 @@ export class InstagramClient extends EventEmitter {
       }
 
       // Step 3: Fallback to fresh login using username & password if enabled
-      if (!loginSuccess && config.instagram?.password) {
-        try {
-          this.log('INFO', '🔐 Attempting fresh login with username and password...');
-          await this.ig.account.login(username, config.instagram.password);
+if (!loginSuccess && config.instagram?.password) { // <-- Yahan problem
+  try {
+    this.log('INFO', '🔐 Attempting fresh login with username and password...');
+    await this.ig.account.login(username, config.instagram.password);
           this.log('INFO', `✅ Fresh login successful as @${username}`);
           loginSuccess = true;
           // Yahan dhyan se dekho:

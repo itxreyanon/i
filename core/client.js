@@ -727,7 +727,7 @@ export class InstagramClient extends EventEmitter {
       httpOnly: cookie.httpOnly
     }));
     // Ensure directory exists (keep sync mkdir from code 3)
-    const dir = require('path').dirname(cookiePath);
+      const dir = path.dirname(cookiePath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }

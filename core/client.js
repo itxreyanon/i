@@ -114,149 +114,167 @@ export class InstagramClient extends EventEmitter {
    * @param {string} password - Instagram password (can also be in options or env)
    * @returns {Promise<void>}
    */
-  async login(username, password) {
-    // Allow username/password from constructor options or method arguments
+// Updated login method for client.js
+async login(username, password) {
+  try {
     const finalUsername = username || this.options.username || process.env.INSTAGRAM_USERNAME;
     const finalPassword = password || this.options.password || process.env.INSTAGRAM_PASSWORD;
 
     if (!finalUsername) {
-      throw new Error('❌ INSTAGRAM_USERNAME is missing (provide as arg, option, or env var)');
+      throw new Error('❌ Instagram username is required');
     }
-    // Password only strictly required for fresh login, but good to check early
-    // if (!finalPassword) {
-    //   logger.warn('⚠️ INSTAGRAM_PASSWORD not provided yet. Required for fresh login if session/cookies fail.');
-    // }
 
     logger.info(`🔑 Attempting login for @${finalUsername}...`);
     this.ig.state.generateDevice(finalUsername);
 
+    // Enable automatic challenge handling
+    this.ig.challenge.auto(true);
+
+    // Modern login flow with pre/post login simulation
+    await this.ig.simulate.preLoginFlow();
+
+    // Try session first if exists
     let loginSuccess = false;
-
-    // --- Step 1: Try session.json (serialized state) ---
-    try {
-      await fsPromises.access(this.options.sessionPath); // Use fs.promises
-      logger.info(`📂 Found session file at ${this.options.sessionPath}, trying to login from session...`);
-      const sessionData = JSON.parse(await fsPromises.readFile(this.options.sessionPath, 'utf-8')); // Use fs.promises
-      await this.ig.state.deserialize(sessionData);
-
+    if (existsSync(this.options.sessionPath)) {
       try {
-        await this.ig.account.currentUser(); // Validate session
-        logger.info('✅ Logged in from session.json');
+        const sessionData = JSON.parse(await fsPromises.readFile(this.options.sessionPath, 'utf-8'));
+        await this.ig.state.deserialize(sessionData);
+        
+        // Validate session
+        await this.ig.account.currentUser();
         loginSuccess = true;
-      } catch (validationError) {
-        logger.warn('⚠️ Session validation failed:', validationError.message);
-        // Fall through to cookie login if session is invalid
-      }
-    } catch (sessionAccessError) {
-      logger.info(`📂 Session file not found or invalid at ${this.options.sessionPath}, trying cookies...`, sessionAccessError.message);
-      // Fall through to cookie login if session file access fails
-    }
-
-    // --- Step 2: Try loading cookies from the same session.json file or a separate cookies.json ---
-    if (!loginSuccess) {
-      try {
-        logger.info('📂 Attempting login using cookies from session file or cookies.json...');
-        // Attempt to load cookies. _loadCookies now handles the logic from OriginalInstagramBot.js
-        await this._loadCookies();
-
-        try {
-          const currentUserResponse = await this.ig.account.currentUser();
-          logger.info(`✅ Logged in using cookies as @${currentUserResponse.username}`);
-          loginSuccess = true;
-
-          // Save/overwrite session.json after successful cookie login, similar to OriginalInstagramBot.js
-          const session = await this.ig.state.serialize();
-          delete session.constants; // Clean up
-          // Ensure directory exists (adapted from _saveCookies logic)
-          const dir = path.dirname(this.options.sessionPath);
-          if (!existsSync(dir)) { // Use sync version for mkdir
-             mkdirSync(dir, { recursive: true });
-          }
-          await fsPromises.writeFile(this.options.sessionPath, JSON.stringify(session, null, 2)); // Use fs.promises
-          logger.info(`💾 Session.json saved/updated after cookie-based login at ${this.options.sessionPath}`);
-
-        } catch (cookieValidationError) {
-          logger.error('❌ Failed to validate login using loaded cookies:', cookieValidationError.message);
-          logger.debug('Cookie validation error stack:', cookieValidationError.stack);
-          // Continue to fresh login
-        }
-      } catch (cookieLoadError) {
-        logger.error('❌ Failed to load or process cookies:', cookieLoadError.message);
-        logger.debug('Cookie loading error stack:', cookieLoadError.stack);
-        // Continue to fresh login
+        logger.info('✅ Logged in from existing session');
+      } catch (sessionError) {
+        logger.warn('⚠️ Session login failed:', sessionError.message);
       }
     }
 
-    // --- Step 3: Fallback to fresh login using username & password ---
+    // Fallback to password login if session fails
     if (!loginSuccess && finalPassword) {
       try {
-        logger.info('🔐 Attempting fresh login with username and password...');
         await this.ig.account.login(finalUsername, finalPassword);
-        logger.info(`✅ Fresh login successful as @${finalUsername}`);
         loginSuccess = true;
+        logger.info('✅ Logged in with password');
 
-        // Save session after fresh login - CRITICAL PART: Ensure correct serialization
+        // Save session after successful login
         const session = await this.ig.state.serialize();
-        delete session.constants; // Clean up like OriginalInstagramBot.js
-        const dir = path.dirname(this.options.sessionPath);
-        if (!existsSync(dir)) { // Use sync version for mkdir
-           mkdirSync(dir, { recursive: true });
-        }
-        await fsPromises.writeFile(this.options.sessionPath, JSON.stringify(session, null, 2)); // Use fs.promises
-        logger.info(`💾 Session.json saved after fresh login at ${this.options.sessionPath}`);
-
+        delete session.constants;
+        await fsPromises.writeFile(this.options.sessionPath, JSON.stringify(session, null, 2));
+        logger.info(`💾 Saved session to ${this.options.sessionPath}`);
       } catch (loginError) {
-        logger.error('❌ Fresh login failed:', loginError.message);
-        logger.debug('Fresh login error stack:', loginError.stack);
-        // Wrap and re-throw to stop the process
-        throw new Error(`Fresh login failed: ${loginError.message}`);
+        logger.error('❌ Password login failed:', loginError.message);
+        throw loginError;
       }
-    } else if (!loginSuccess) {
-         logger.error('❌ No valid login method succeeded (session or cookies) and password not available for fresh login.');
-         throw new Error('No valid login method succeeded (session or cookies) and password not available for fresh login.');
     }
 
-    if (loginSuccess) {
-        // --- Post-Login Success Steps ---
-        // Get user info
-        const userInfo = await this.ig.account.currentUser();
-        this.user = this._patchOrCreateUser(userInfo.pk, userInfo);
-
-        // Load existing chats
-        await this._loadChats();
-
-        // Setup realtime handlers (do this before connect)
-        this._setupRealtimeHandlers();
-
-        // Connect to realtime
-        await this.ig.realtime.connect({
-            autoReconnect: this.options.autoReconnect,
-            irisData: await this.ig.feed.directInbox().request()
-            // Add other subscriptions if needed, similar to OriginalInstagramBot.js
-            // graphQlSubs: [...],
-            // skywalkerSubs: [...],
-        });
-
-        this.loggedIn = true; // Indicate login process finished
-        this.ready = true;    // Indicate fully ready (connected)
-        this.running = true;  // Indicate intended to be running
-        this._retryCount = 0; // Reset retry count
-
-        logger.info(`✅ Instagram client connected and ready as @${this.user.username} (ID: ${this.user.id})`);
-
-        this.emit('ready');
-
-        // Replay queued events if any occurred before ready
-        this._replayEvents();
-        // --- End Post-Login Success Steps ---
-    } else {
-        // This case should ideally be caught by the 'else if (!loginSuccess)' above
-        throw new Error('Login process completed but loginSuccess flag was not set. This should not happen.');
+    if (!loginSuccess) {
+      throw new Error('No valid login method succeeded');
     }
+
+    // Complete login flow
+    await this.ig.simulate.postLoginFlow();
+
+    // Initialize user and chats
+    const userInfo = await this.ig.account.currentUser();
+    this.user = this._patchOrCreateUser(userInfo.pk, userInfo);
+    await this._loadChats();
+
+    // Setup realtime connection
+    await this._setupRealtimeConnection();
+
+    this.loggedIn = true;
+    this.ready = true;
+    this.running = true;
+
+    logger.info(`🚀 Successfully logged in as @${this.user.username}`);
+    this.emit('ready');
+
+  } catch (error) {
+    logger.error('❌ Login failed:', error.message);
+    
+    // Handle specific error cases
+    if (error.name === 'IgCheckpointError') {
+      logger.warn('⚠️ Checkpoint required - manual verification needed');
+      await this._handleCheckpoint();
+    } else if (error.name === 'IgLoginTwoFactorRequiredError') {
+      logger.warn('⚠️ 2FA required - implement 2FA handling');
+      await this._handleTwoFactor();
+    }
+    
+    throw error;
   }
+}
 
-  // ... (rest of the class methods remain largely the same, but ensure they use this.ready and this.loggedIn where appropriate) ...
+// Add these helper methods to your client class:
 
+async _setupRealtimeConnection() {
+  try {
+    await this.ig.realtime.connect({
+      irisData: await this.ig.feed.directInbox().request(),
+      connectOverrides: {
+        // Required auth for current Instagram
+        auth: {
+          user: this.ig.state.cookieUserId,
+          pass: this.ig.state.cookiePassword
+        }
+      },
+      // Enable auto-reconnect
+      autoReconnect: true,
+      // Required subscriptions
+      graphQlSubs: [
+        GraphQLSubscriptions.getAppPresenceSubscription(),
+        GraphQLSubscriptions.getDirectStatusSubscription(),
+        GraphQLSubscriptions.getDirectTypingSubscription(this.ig.state.cookieUserId)
+      ],
+      skywalkerSubs: [
+        SkywalkerSubscriptions.directSub(this.ig.state.cookieUserId)
+      ]
+    });
+
+    // Setup FBNS for push notifications
+    this.ig.fbns.push$.subscribe((data) => this._handlePushNotification(data));
+    await this.ig.fbns.connect();
+
+    logger.info('📡 Realtime connection established');
+  } catch (error) {
+    logger.error('❌ Realtime connection failed:', error.message);
+    throw error;
+  }
+}
+
+async _handleCheckpoint() {
+  try {
+    // Implement your checkpoint handling logic
+    const code = await prompt('Enter verification code from email/SMS:');
+    await this.ig.challenge.sendSecurityCode(code);
+    
+    // Save session after successful verification
+    const session = await this.ig.state.serialize();
+    await fsPromises.writeFile(this.options.sessionPath, JSON.stringify(session, null, 2));
+    
+    logger.info('✅ Checkpoint verification successful');
+  } catch (error) {
+    logger.error('❌ Checkpoint verification failed:', error.message);
+    throw error;
+  }
+}
+
+async _handleTwoFactor() {
+  try {
+    // Implement your 2FA handling logic
+    const code = await prompt('Enter 2FA code:');
+    await this.ig.account.twoFactorLogin({
+      username: this.ig.state.username,
+      verificationCode: code,
+      trustThisDevice: '1'
+    });
+    
+    logger.info('✅ 2FA verification successful');
+  } catch (error) {
+    logger.error('❌ 2FA verification failed:', error.message);
+    throw error;
+  }
+}
   /**
    * Setup realtime event handlers
    * @private

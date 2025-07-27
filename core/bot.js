@@ -10,7 +10,7 @@ export class InstagramBot {
      * Enhanced Instagram client
      * @type {InstagramClient}
      */
-    this.client = new InstagramClient();
+    this.client = new Client();
     
     /**
      * Module manager for dynamic module loading

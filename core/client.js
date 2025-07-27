@@ -1,24 +1,18 @@
 import { IgApiClient } from 'instagram-private-api';
 import { withRealtime } from 'instagram_mqtt';
 import { EventEmitter } from 'events';
-// Use fs.promises for consistency with OriginalInstagramBot.js
-import { promises as fsPromises } from 'fs'; // CHANGED: Use fs.promises
-import { existsSync, mkdirSync } from 'fs'; // Keep sync for quick checks/mkdir
+import fs from 'fs'; // Keep original fs for sync operations used in code 3
+import { promises as fsPromises } from 'fs'; // Add fs.promises for async operations like in code 2
 import tough from 'tough-cookie';
 import { Collection } from '@discordjs/collection';
 import User from '../utils/User.js';
 import Chat from '../utils/Chat.js';
 import Message from '../utils/Message.js';
 import { logger } from '../utils/utils.js';
-import path from 'path';
-import { fileURLToPath } from 'url';
-// import { writeFileSync } from 'fs'; // Not needed if using fsPromises.writeFile
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import camelcaseKeys from 'camelcase-keys'; // Import for push notification parsing (from code 2)
 
 /**
- * Enhanced Instagram client with rich object support and robust login
+ * Enhanced Instagram client with rich object support and robust login logic from instagram-bot.js
  * @extends {EventEmitter}
  */
 export class InstagramClient extends EventEmitter {
@@ -30,13 +24,11 @@ export class InstagramClient extends EventEmitter {
      */
     this.options = {
       disableReplyPrefix: false,
-      // Align session path default with OriginalInstagramBot.js structure
-      sessionPath: './session.json', // CHANGED: Default to session.json like OriginalInstagramBot.js
+      sessionPath: './session/session.json', // Keep original path from code 3
       messageCheckInterval: 5000,
       maxRetries: 3,
       autoReconnect: true,
-      // Allow passing username/password via options if desired
-      username: null,
+      username: null, // Add username/password options like in code 2
       password: null,
       ...options
     };
@@ -56,11 +48,6 @@ export class InstagramClient extends EventEmitter {
      */
     this.ready = false;
     /**
-     * Whether the client login process has started/finished successfully
-     * @type {boolean}
-     */
-    this.loggedIn = false; // ADDED: Track login success
-    /**
      * Whether the client is running (intended to be connected)
      * @type {boolean}
      */
@@ -76,7 +63,7 @@ export class InstagramClient extends EventEmitter {
       messages: new Collection()
     };
     /**
-     * Last message check timestamp (if used for alternative dedup)
+     * Last message check timestamp (legacy timestamp-based dedup)
      * @type {Date}
      */
     this.lastMessageCheck = new Date(Date.now() - 60000);
@@ -92,8 +79,7 @@ export class InstagramClient extends EventEmitter {
      * @private
      */
     this._retryCount = 0;
-
-    // --- Add deduplication properties from OriginalInstagramBot.js ---
+    // --- Add deduplication properties from code 2 ---
     /**
      * Set for tracking processed message IDs for deduplication
      * @type {Set<string>}
@@ -104,486 +90,166 @@ export class InstagramClient extends EventEmitter {
      * @type {number}
      */
     this.maxProcessedMessageIds = 1000;
-    // --- End deduplication properties ---
+    // --- Store for push notification context (from code 2) ---
+    this.pushContext = {}; // Store thread_id, item_id, etc. from push notifications
+    // --- End push context ---
   }
 
   /**
    * Robust Login to Instagram using session, cookies, or password
-   * Adapted from OriginalInstagramBot.js login logic
-   * @param {string} username - Instagram username (can also be in options or env)
-   * @param {string} password - Instagram password (can also be in options or env)
+   * Adapted EXCLUSIVELY from the login logic in instagram-bot.js (code 2)
+   * @param {string} [username] - Instagram username (can also be in options)
+   * @param {string} [password] - Instagram password (can also be in options)
    * @returns {Promise<void>}
    */
-// Updated login method for client.js
-// Updated login method in client.js
-// Updated login method in client.js
-async login(username, password) {
-  try {
-    const finalUsername = username || this.options.username;
-    const finalPassword = password || this.options.password;
-
-    if (!finalUsername || !finalPassword) {
-      throw new Error('Username and password are required');
-    }
-
-    logger.info(`🔑 Attempting login for @${finalUsername}...`);
-    
-    // 1. Initialize client with realistic device settings
-    this.ig.state.generateDevice(finalUsername);
-    this.ig.state.deviceString = 'Android/10.0.0'; // More realistic device string
-    this.ig.state.deviceId = `android-${crypto.randomBytes(8).toString('hex')}`;
-    
-    // 2. Implement request throttling
-    this.ig.request.end$.subscribe(() => {
-      return new Promise(resolve => setTimeout(resolve, 2000)); // 2s delay between requests
-    });
-
-    // 3. Try session login first if exists
-    if (existsSync(this.options.sessionPath)) {
-      try {
-        const session = JSON.parse(await fsPromises.readFile(this.options.sessionPath));
-        await this.ig.state.deserialize(session);
-        
-        // Verify session is still valid
-        try {
-          await this.ig.account.currentUser();
-          logger.info('✅ Logged in from existing session');
-          await this._completeLogin();
-          return;
-        } catch (sessionError) {
-          logger.warn('⚠️ Session expired:', sessionError.message);
-        }
-      } catch (fileError) {
-        logger.warn('⚠️ Failed to load session:', fileError.message);
-      }
-    }
-
-    // 4. Implement retry mechanism with delays
-    const maxRetries = 3;
-    let lastError;
-    
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        logger.info(`Attempt ${attempt}/${maxRetries}`);
-        
-        // Add progressive delay between attempts
-        if (attempt > 1) {
-          const delaySeconds = Math.min(30, Math.pow(2, attempt)); // Exponential backoff
-          logger.info(`⏳ Waiting ${delaySeconds} seconds before retry...`);
-          await new Promise(resolve => setTimeout(resolve, delaySeconds * 1000));
-        }
-
-        // 5. Modern login flow with proper headers
-        await this.ig.simulate.preLoginFlow();
-        const loggedInUser = await this.ig.account.login(finalUsername, finalPassword);
-        await this.ig.simulate.postLoginFlow();
-
-        // 6. Save session with additional metadata
-        const state = await this.ig.state.serialize();
-        state.loginTimestamp = Date.now();
-        state.loginIP = await this._getPublicIP();
-        await fsPromises.writeFile(this.options.sessionPath, JSON.stringify(state));
-        logger.info('💾 Saved new session');
-
-        await this._completeLogin();
-        return;
-        
-      } catch (error) {
-        lastError = error;
-        
-        // Handle specific error cases
-        if (error.message.includes('token_expired') || error.message.includes('401')) {
-          logger.warn(`⚠️ Instagram blocked request (attempt ${attempt}): ${error.message}`);
-          continue;
-        }
-        
-        if (error.name === 'IgCheckpointError') {
-          logger.warn('⚠️ Checkpoint required - solving automatically');
-          await this._solveCheckpoint(error);
-          await this._completeLogin();
-          return;
-        }
-        
-        // For other errors, break the retry loop
-        break;
-      }
-    }
-    
-    throw lastError || new Error('Login failed after multiple attempts');
-    
-  } catch (error) {
-    logger.error('❌ Login failed:', error.message);
-    this.ready = false;
-    this.loggedIn = false;
-    throw error;
-  }
-}
-
-// Additional helper methods:
-
-async _getPublicIP() {
-  try {
-    const response = await fetch('https://api.ipify.org?format=json');
-    const data = await response.json();
-    return data.ip;
-  } catch {
-    return 'unknown';
-  }
-}
-
-async _solveCheckpoint(error) {
-  try {
-    // Reset challenge state
-    this.ig.state.challenge = null;
-    
-    // Get challenge
-    const challenge = await this.ig.challenge.auto(false); // Disable auto-resolve
-    
-    if (!challenge) {
-      throw new Error('No checkpoint challenge available');
-    }
-    
-    // Select email verification by default
-    const method = challenge.step_data?.choice || '1';
-    await this.ig.challenge.selectVerifyMethod(method);
-    
-    // Get security code (implement your own logic here)
-    const code = await this._getSecurityCode();
-    
-    // Submit code with delay
-    await new Promise(resolve => setTimeout(resolve, 5000)); // 5s delay
-    await this.ig.challenge.sendSecurityCode(code);
-    
-    // Verify challenge was solved
-    await new Promise(resolve => setTimeout(resolve, 3000)); // 3s delay
-    const user = await this.ig.account.currentUser();
-    
-    // Save session
-    const state = await this.ig.state.serialize();
-    await fsPromises.writeFile(this.options.sessionPath, JSON.stringify(state));
-    
-    logger.info('✅ Checkpoint solved successfully');
-    return user;
-    
-  } catch (error) {
-    logger.error('❌ Failed to solve checkpoint:', error.message);
-    throw error;
-  }
-}
-
-async _completeLogin() {
-  // Initialize user
-  const userInfo = await this.ig.account.currentUser();
-  this.user = this._patchOrCreateUser(userInfo.pk, userInfo);
-  
-  // Load chats with delay
-  await new Promise(resolve => setTimeout(resolve, 1000));
-  await this._loadChats();
-  
-  // Connect to realtime with delay
-  await new Promise(resolve => setTimeout(resolve, 2000));
-  await this._setupRealtime();
-  
-  this.ready = true;
-  this.loggedIn = true;
-  logger.info(`🚀 Successfully logged in as @${this.user.username}`);
-  this.emit('ready');
-}
-
-
-async _getSecurityCode() {
-  // Implement your code retrieval logic here
-  // This could be:
-  // 1. Manual input via console
-  // 2. Email/SMS parsing
-  // 3. Database lookup
-  
-  // Example: Prompt user for input
-  const readline = require('readline').createInterface({
-    input: process.stdin,
-    output: process.stdout
-  });
-  
-  return new Promise(resolve => {
-    readline.question('Enter verification code: ', code => {
-      readline.close();
-      resolve(code);
-    });
-  });
-}
-
-async _setupRealtime() {
-  try {
-    await this.ig.realtime.connect({
-      irisData: await this.ig.feed.directInbox().request(),
-      connectOverrides: {
-        auth: {
-          user: this.ig.state.cookieUserId,
-          pass: this.ig.state.cookiePassword
-        }
-      }
-    });
-    
-    // Setup push notifications
-    this.ig.fbns.push$.subscribe(data => this._handlePushNotification(data));
-    await this.ig.fbns.connect();
-    
-    logger.info('📡 Realtime connection established');
-  } catch (error) {
-    logger.error('❌ Realtime connection failed:', error.message);
-    throw error;
-  }
-}
-
-async _handleCheckpoint() {
-  try {
-    // Implement your checkpoint handling logic
-    const code = await prompt('Enter verification code from email/SMS:');
-    await this.ig.challenge.sendSecurityCode(code);
-    
-    // Save session after successful verification
-    const session = await this.ig.state.serialize();
-    await fsPromises.writeFile(this.options.sessionPath, JSON.stringify(session, null, 2));
-    
-    logger.info('✅ Checkpoint verification successful');
-  } catch (error) {
-    logger.error('❌ Checkpoint verification failed:', error.message);
-    throw error;
-  }
-}
-
-async _handleTwoFactor() {
-  try {
-    // Implement your 2FA handling logic
-    const code = await prompt('Enter 2FA code:');
-    await this.ig.account.twoFactorLogin({
-      username: this.ig.state.username,
-      verificationCode: code,
-      trustThisDevice: '1'
-    });
-    
-    logger.info('✅ 2FA verification successful');
-  } catch (error) {
-    logger.error('❌ 2FA verification failed:', error.message);
-    throw error;
-  }
-}
-  /**
-   * Setup realtime event handlers
-   * @private
-   */
-  _setupRealtimeHandlers() {
-    logger.info('📡 Setting up realtime handlers...');
-    // Main message handler
-    this.ig.realtime.on('message', async (data) => {
-      try {
-        if (!this.ready) { // Use 'ready' to check if fully initialized
-          this._eventsToReplay.push(['message', data]);
-          logger.debug('📨 Queued message event (not ready yet)');
-          return;
-        }
-        // Use the original bot's deduplication logic
-        if (!data.message || !this._isNewMessageById(data.message.item_id)) { // CHANGED: Use ID-based dedup
-          // logger.debug(`⚠️ Message ${data.message?.item_id} filtered as duplicate`);
-          return;
-        }
-        logger.debug('📨 Processing new message event');
-        await this._handleMessage(data.message, data);
-      } catch (error) {
-        logger.error('❌ Message handler error:', error.message);
-        logger.debug('Message handler error stack:', error.stack);
-      }
-    });
-    // Direct events handler
-    this.ig.realtime.on('direct', async (data) => {
-      try {
-        if (!this.ready) {
-          this._eventsToReplay.push(['direct', data]);
-          logger.debug('📨 Queued direct event (not ready yet)');
-          return;
-        }
-        if (data.message && this._isNewMessageById(data.message.item_id)) { // CHANGED: Use ID-based dedup
-           logger.debug('📨 Processing new direct event with message');
-          await this._handleMessage(data.message, data);
-        } else {
-             logger.debug('ℹ️ Processing direct event (non-message or duplicate)');
-             // Handle other direct events if needed
-             this.emit('directEvent', data); // Example: emit for non-message direct events
-        }
-      } catch (error) {
-        logger.error('❌ Direct handler error:', error.message);
-        logger.debug('Direct handler error stack:', error.stack);
-      }
-    });
-
-    // Connection events
-    this.ig.realtime.on('error', (error) => {
-      logger.error('🚨 Realtime error:', error.message);
-      this.emit('error', error);
-      if (this.options.autoReconnect && this._retryCount < this.options.maxRetries && this.running) {
-        this._attemptReconnect();
-      }
-    });
-    this.ig.realtime.on('close', () => {
-      logger.warn('🔌 Realtime connection closed');
-      this.ready = false; // Mark as not ready when connection closes
-      this.emit('disconnect');
-      if (this.running && this.options.autoReconnect) { // Only reconnect if intended to run
-        this._attemptReconnect();
-      }
-    });
-    // Debug events
-    this.ig.realtime.on('receive', (topic, messages) => {
-      const topicStr = String(topic || '');
-      if (topicStr.includes('direct') || topicStr.includes('message')) {
-        logger.debug(`📥 Realtime receive: ${topicStr}`);
-      }
-    });
-
-    // Add connect/reconnect handlers for better state management
-     this.ig.realtime.on('connect', () => {
-      logger.info('🔗 Realtime connection successfully established');
-      // this.ready is set to true in login after connect resolves
-    });
-
-    this.ig.realtime.on('reconnect', () => {
-      logger.info('🔁 Realtime client is attempting to reconnect');
-      this.ready = false; // Temporarily not ready during reconnect
-    });
-  }
-
-  // --- Deduplication Logic (Integrated from OriginalInstagramBot.js) ---
-  // Improved deduplication using message ID
-  _isNewMessageById(messageId) {
-    if (!messageId) {
-        logger.warn('⚠️ Attempted to check message ID, but ID was missing.');
-        return true; // Default to processing if ID is missing
-    }
-    if (this.processedMessageIds.has(messageId)) {
-        return false; // Already processed
-    }
-    // Add new ID to the set
-    this.processedMessageIds.add(messageId);
-    // Prevent memory leak by removing oldest IDs
-    if (this.processedMessageIds.size > this.maxProcessedMessageIds) {
-        // Simple FIFO removal of the first (oldest) entry
-        const first = this.processedMessageIds.values().next().value;
-        if (first !== undefined) {
-            this.processedMessageIds.delete(first);
-        }
-    }
-    return true; // It's new
-  }
-  // --- End Deduplication Logic ---
-
-  /**
-   * Load cookies from file (Adapted from OriginalInstagramBot.js)
-   * Handles loading from session.json (if it contains cookies) or cookies.json
-   * @returns {Promise<void>}
-   * @private
-   */
-  async _loadCookies() {
-    let cookiesToLoad = [];
-    let sourceDescription = '';
-
-    // Strategy 1: Try loading cookies from the main session.json file (if it's the unified format)
+  async login(username, password) {
     try {
-        const sessionDataRaw = await fsPromises.readFile(this.options.sessionPath, 'utf-8');
-        const sessionData = JSON.parse(sessionDataRaw);
-        // Check if session.json has a cookies array directly (like the unified format)
-        if (Array.isArray(sessionData.cookies)) {
-            cookiesToLoad = sessionData.cookies;
-            sourceDescription = `session file (${this.options.sessionPath})`;
-            logger.debug(`🍪 Found ${cookiesToLoad.length} cookies in session.json`);
-        } else {
-            // If session.json exists but doesn't have cookies array, it might be the serialized state
-            // without cookies, or an old format. We'll try cookies.json next.
-            logger.debug(`📂 Session file found at ${this.options.sessionPath} but no cookies array found. Trying cookies.json...`);
-        }
-    } catch (sessionReadError) {
-        // session.json doesn't exist or is invalid JSON, try cookies.json
-        logger.debug(`📂 Session file not found or invalid at ${this.options.sessionPath}. Trying cookies.json...`);
-    }
+      // Use provided args, then options (like code 2)
+      const finalUsername = username || this.options.username;
+      const finalPassword = password || this.options.password;
 
-    // Strategy 2: If no cookies from session.json, try cookies.json
-    if (cookiesToLoad.length === 0) {
-        const cookiesPath = './cookies.json'; // Path used in OriginalInstagramBot.js
-        try {
-            await fsPromises.access(cookiesPath); // Use fs.promises
-            const cookiesRaw = await fsPromises.readFile(cookiesPath, 'utf-8'); // Use fs.promises
-            cookiesToLoad = JSON.parse(cookiesRaw);
-            sourceDescription = 'cookies.json';
-            logger.debug(`🍪 Found ${cookiesToLoad.length} cookies in cookies.json`);
-        } catch (cookiesError) {
-            // cookies.json doesn't exist or is invalid
-            logger.debug(`📂 cookies.json not found or invalid: ${cookiesError.message}`);
-            throw new Error('No valid cookies found in session.json or cookies.json');
-        }
-    }
-
-    // If we found cookies, load them into the IgApiClient state
-    if (cookiesToLoad.length > 0) {
-        let cookiesLoaded = 0;
-        for (const cookie of cookiesToLoad) {
-            // Ensure cookie object has the expected structure
-            if (!cookie.name || !cookie.value || !cookie.domain) {
-                logger.warn(`⚠️ Skipping invalid cookie structure: ${JSON.stringify(cookie)}`);
-                continue;
-            }
-            try {
-                const toughCookie = new tough.Cookie({
-                    key: cookie.name,
-                    value: cookie.value,
-                    domain: cookie.domain.replace(/^\./, ''), // Remove leading dot if present
-                    path: cookie.path || '/',
-                    secure: cookie.secure !== false, // Default to true if not explicitly false
-                    httpOnly: cookie.httpOnly !== false, // Default to true if not explicitly false
-                    // Add expires if available
-                    // expires: cookie.expires ? new Date(cookie.expires) : undefined
-                });
-
-                // Set the cookie in the jar
-                await this.ig.state.cookieJar.setCookie(
-                    toughCookie.toString(),
-                    `https://${toughCookie.domain}${toughCookie.path}`
-                );
-                cookiesLoaded++;
-            } catch (cookieProcessError) {
-                 logger.warn(`⚠️ Error processing cookie ${cookie.name}:`, cookieProcessError.message);
-                 // Continue with other cookies
-            }
-        }
-        logger.info(`🍪 Successfully loaded ${cookiesLoaded}/${cookiesToLoad.length} cookies from ${sourceDescription}`);
-        if (cookiesLoaded === 0) {
-             throw new Error('No cookies could be successfully loaded and set.');
-        }
-    } else {
-        // This case should ideally be caught by the throw above
-        throw new Error('No cookies available to load.');
-    }
-  }
-
-  /**
-   * Save cookies/state to file (Adapted from OriginalInstagramBot.js logic within login)
-   * This is now primarily handled within the main login flow after successful auth.
-   * Keeping this method for potential future use or manual saving.
-   * @returns {Promise<void>}
-   * @private
-   */
-  async _saveCookies() {
-    try {
-      const state = await this.ig.state.serialize(); // includes cookies, device, etc.
-      // Ensure directory exists
-      const dir = path.dirname(this.options.sessionPath);
-      if (!existsSync(dir)) { // Use sync version for mkdir
-        mkdirSync(dir, { recursive: true });
+      if (!finalUsername) {
+        throw new Error('❌ INSTAGRAM_USERNAME is missing');
       }
-      await fsPromises.writeFile(this.options.sessionPath, JSON.stringify(state, null, 2)); // Use fs.promises
-      logger.info(`🍪 Saved cookies and state to ${this.options.sessionPath}`);
-    } catch (saveError) {
-       logger.error(`❌ Error saving cookies/state to ${this.options.sessionPath}:`, saveError.message);
-       logger.debug('Save cookies error stack:', saveError.stack);
-       // Don't throw, as this is usually a non-fatal error
+      // Password is only required if session/cookies fail and fresh login is attempted
+      // Final password check happens later (like code 2)
+
+      logger.info(`🔑 Attempting login for @${finalUsername}...`);
+      this.ig.state.generateDevice(finalUsername);
+
+      let loginSuccess = false; // Flag to track successful login path (like code 2)
+
+      // Step 1: Try session.json first (adapted from code 2, using fs.promises)
+      // Use the sessionPath from code 3's options
+      const sessionPath = this.options.sessionPath;
+      try {
+        await fsPromises.access(sessionPath); // Use fs.promises like code 2
+        logger.info(`📂 Found session file at ${sessionPath}, trying to login from session...`);
+        const sessionData = JSON.parse(await fsPromises.readFile(sessionPath, 'utf-8')); // Use fs.promises like code 2
+        await this.ig.state.deserialize(sessionData);
+
+        // --- Add specific error handling for currentUser() (from code 2) ---
+        try {
+          await this.ig.account.currentUser(); // Validate session
+          logger.info('✅ Logged in from session file');
+          loginSuccess = true;
+        } catch (validationError) {
+          logger.warn('⚠️ Session validation failed:', validationError.message);
+          // Fall through to cookie login if session is invalid (like code 2)
+        }
+        // --- End addition ---
+      } catch (sessionAccessError) {
+        logger.info(`📂 Session file not found or invalid at ${sessionPath}, trying cookies...`, sessionAccessError.message);
+        // Fall through to cookie login if session file access fails (like code 2)
+      }
+
+      // Step 2: Try loading cookies if session login wasn't successful (adapted from code 2 logic)
+      if (!loginSuccess) {
+        try {
+          logger.info('📂 Attempting login using saved cookies...');
+          // Use the existing _loadCookies method from code 3, which should handle cookies.json or session cookies
+          await this._loadCookies();
+          try {
+            const currentUserResponse = await this.ig.account.currentUser();
+            logger.info(`✅ Logged in using saved cookies as @${currentUserResponse.username}`);
+            loginSuccess = true;
+            // Save session after successful cookie login (like code 2)
+            const session = await this.ig.state.serialize();
+            delete session.constants;
+            await fsPromises.writeFile(sessionPath, JSON.stringify(session, null, 2)); // Use fs.promises like code 2
+            logger.info(`💾 Session file saved from cookie-based login to ${sessionPath}`);
+          } catch (cookieValidationError) {
+            logger.error('❌ Failed to validate login using saved cookies:', cookieValidationError.message);
+            logger.debug('Cookie validation error stack:', cookieValidationError.stack);
+            // Continue to fresh login
+          }
+        } catch (cookieLoadError) {
+          logger.error('❌ Failed to load or process saved cookies:', cookieLoadError.message);
+          logger.debug('Cookie loading error stack:', cookieLoadError.stack);
+          // Continue to fresh login
+        }
+      }
+
+      // Step 3: Fallback to fresh login using username & password if previous methods failed (from code 2)
+      if (!loginSuccess) {
+        // Check if password is available for fresh login (like code 2)
+        if (!finalPassword) {
+             logger.warn('⚠️ No password provided for fresh login attempt.');
+             throw new Error('No valid login method succeeded (session or cookies) and password is not available for fresh login.');
+        }
+        try {
+          logger.info('🔐 Attempting fresh login with username and password...');
+          await this.ig.account.login(finalUsername, finalPassword);
+          logger.info(`✅ Fresh login successful as @${finalUsername}`);
+          loginSuccess = true;
+          // Save session after successful fresh login (like code 2)
+          const session = await this.ig.state.serialize();
+          delete session.constants;
+          await fsPromises.writeFile(sessionPath, JSON.stringify(session, null, 2)); // Use fs.promises like code 2
+          logger.info(`💾 Session file saved after fresh login to ${sessionPath}`);
+        } catch (loginError) {
+          logger.error('❌ Fresh login failed:', loginError.message);
+          logger.debug('Fresh login error stack:', loginError.stack);
+          throw new Error(`Fresh login failed: ${loginError.message}`);
+        }
+      }
+
+      if (loginSuccess) {
+        // --- Complete login setup AFTER successful authentication (like code 2) ---
+        // Initialize user
+        const userInfo = await this.ig.account.currentUser();
+        this.user = this._patchOrCreateUser(userInfo.pk, userInfo);
+        logger.info(`👤 Bot user initialized: @${this.user.username}`);
+
+        // Load chats with delay (keep original delay from code 3)
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        await this._loadChats();
+
+        // Setup realtime handlers (call the existing method, but update it)
+        this._setupRealtimeHandlers(); // Register handlers
+
+        // Connect to realtime service (similar structure to code 2)
+        logger.info('📡 Connecting to Instagram realtime service...');
+        await this.ig.realtime.connect({
+          // Add graphQlSubs and skywalkerSubs like code 2 for full features if needed
+          // graphQlSubs: [...],
+          // skywalkerSubs: [...],
+          irisData: await this.ig.feed.directInbox().request(),
+          connectOverrides: {},
+          // Add proxy options if needed like code 2
+          // socksOptions: this.options.proxy ? { ... } : undefined,
+        });
+        logger.info('📡 Realtime connection established');
+
+        // --- Update state flags (like code 2 and updated code 3) ---
+        this.ready = true; // Mark as fully ready after connection
+        this.running = true;
+
+        logger.info(`🚀 Successfully logged in and connected as @${this.user.username}`);
+        this.emit('ready');
+
+        // Replay queued events if any (keep original logic from code 3)
+        this._replayEvents();
+
+        // --- End registration and connection ---
+      } else {
+        throw new Error('No valid login method succeeded (session or cookies).');
+      }
+    } catch (error) {
+      logger.error('❌ Failed to initialize bot:', error.message);
+      logger.debug('Initialization error stack:', error.stack); // Log stack trace (like code 2)
+
+      this.ready = false;
+      this.running = false; // Ensure running is false on failure (like code 2)
+
+      // --- More specific error re-throwing (like code 2) ---
+      if (error.message.includes('login') || error.message.includes('cookie') || error.message.includes('session')) {
+        throw error; // Re-throw login/cookie/session specific errors
+      } else {
+        // Wrap unexpected errors
+        throw new Error(`Unexpected error during initialization: ${error.message}`);
+      }
+      // --- End specific error re-throwing ---
     }
   }
 
@@ -595,7 +261,10 @@ async _handleTwoFactor() {
     logger.info('🔌 Disconnecting from Instagram...');
     this.running = false;
     this.ready = false;
-    this.loggedIn = false; // Update state
+    // --- Clear Push Context on Disconnect (from code 2) ---
+    this.pushContext = {}; // Clear push context on disconnect
+    logger.debug('🧹 [Push] Cleared push context on disconnect.');
+    // --- End Clear Push Context ---
     try {
       if (this.ig.realtime) {
         await this.ig.realtime.disconnect();
@@ -606,7 +275,6 @@ async _handleTwoFactor() {
     }
     this.emit('disconnect');
   }
-
 
   /**
    * Create or get a user object
@@ -717,62 +385,108 @@ async _handleTwoFactor() {
    */
   _setupRealtimeHandlers() {
     logger.info('📡 Setting up realtime handlers...');
-    // Main message handler
+    // Main message handler for direct messages wrapped in realtime protocol
     this.ig.realtime.on('message', async (data) => {
       try {
-        if (!this.ready) { // Use 'ready' to check if fully initialized
-          this._eventsToReplay.push(['message', data]);
-          logger.debug('📨 Queued message event (not ready yet)');
+        logger.debug('📨 [Realtime] Raw message event data received');
+        if (!data.message) {
+          logger.warn('⚠️ No message payload in event data');
           return;
         }
-        // Use the original bot's deduplication logic if preferred, or keep timestamp-based
-        // if (!this._isNewMessageById(data.message?.item_id)) {
-        if (!data.message || !this._isNewMessage(data.message)) { // Keep existing timestamp check for now
-          // logger.debug(`⚠️ Message ${data.message?.item_id} filtered as duplicate`);
+        // Use improved deduplication (potentially enhanced by push context) (from code 2)
+        // --- Modified call to pass thread_id (from code 2) ---
+        if (!this._isNewMessageById(data.message.item_id, data.message.thread_id)) {
+          logger.debug(`⚠️ Message ${data.message.item_id} filtered as duplicate (by ID or Push Context)`);
           return;
         }
-        logger.debug('📨 Processing new message event');
+        // --- End modification ---
+        logger.info('✅ Processing new message (by ID)...');
         await this._handleMessage(data.message, data);
-      } catch (error) {
-        logger.error('❌ Message handler error:', error.message);
-        logger.debug('Message handler error stack:', error.stack);
+      } catch (err) {
+        logger.error('❌ Critical error in main message handler:', err.message);
       }
     });
-    // Direct events handler
+
+    // Handler for other direct message related events (might overlap with 'message')
     this.ig.realtime.on('direct', async (data) => {
       try {
-        if (!this.ready) {
-          this._eventsToReplay.push(['direct', data]);
-          logger.debug('📨 Queued direct event (not ready yet)');
-          return;
-        }
-        if (data.message && this._isNewMessage(data.message)) { // Keep existing check
-           logger.debug('📨 Processing new direct event with message');
-          await this._handleMessage(data.message, data);
+        logger.debug('📨 [Realtime] Raw direct event data received');
+        // Check if the direct event *also* contains a message payload
+        if (data.message) {
+          // Apply deduplication here too (potentially enhanced by push context) (from code 2)
+          // --- Modified call to pass thread_id (from code 2) ---
+          if (!this._isNewMessageById(data.message.item_id, data.message.thread_id)) {
+            logger.debug(`⚠️ Direct message ${data.message.item_id} filtered as duplicate (by ID or Push Context)`);
+            return;
+          }
+          // --- End modification ---
+          logger.info('✅ Processing new direct message (by ID)...');
+          await this._handleMessage(data.message, data); // Process if it's a new message
         } else {
-             logger.debug('ℹ️ Processing direct event (non-message or duplicate)');
-             // Handle other direct events if needed
-             this.emit('directEvent', data); // Example: emit for non-message direct events
+          // Handle other direct events that are NOT message payloads
+          logger.info('ℹ️ Received non-message direct event');
+          logger.debug('Direct event details:', JSON.stringify(data, null, 2));
+          this.emit('directEvent', data); // Example: emit for non-message direct events
         }
-      } catch (error) {
-        logger.error('❌ Direct handler error:', error.message);
-        logger.debug('Direct handler error stack:', error.stack);
+      } catch (err) {
+        logger.error('❌ Critical error in direct handler:', err.message);
       }
     });
 
-    // --- Integrate FBNS Push Handler from OriginalInstagramBot.js ---
-    // Import camelcase-keys at the top: import camelcaseKeys from 'camelcase-keys';
-    // For now, just log push events
-    this.ig.realtime.on('push', async (data) => {
-       logger.info('🔔 [Push] FBNS Push notification received (handler placeholder)');
-       // logger.debug('🔔 [Push] Data:', JSON.stringify(data, null, 2));
-       // Add processing logic similar to OriginalInstagramBot.js if needed
-       // This primarily helps with deduplication, which is handled by the main handlers now
-       // But good to log for visibility.
+    // --- Push Notification Handling (FBNS) (from code 2) ---
+    logger.info('🔔 Setting up FBNS (Push Notification) listener...');
+    this.ig.realtime.on('push', async (data) => { // <-- Add this 'push' listener
+      try {
+        logger.info('🔔 [Push] FBNS Push notification received');
+        // logger.debug('Push notification ', JSON.stringify(data, null, 2)); // Uncomment for full details
+        // --- Process the Push Notification (Similar to push.example.ts) (from code 2) ---
+        // Use camelcaseKeys to convert snake_case keys to camelCase for easier JS access
+        const { collapseKey, payload } = camelcaseKeys(data, { deep: true });
+        // Check if it's a direct message notification
+        if (collapseKey === 'direct_v2_message') {
+          logger.info('🔔 [Push] Identified as Direct Message notification');
+          // Extract thread_id and item_id from the payload string
+          const threadIdMatch = payload?.match?.(/thread_id=(\d+)/);
+          const itemIdMatch = payload?.match?.(/item_id=([^&]+)/); // Capture until next '&'
+          const threadId = threadIdMatch?.[1];
+          const itemId = itemIdMatch?.[1];
+          logger.info(`🔔 [Push] Extracted - Thread ID: ${threadId}, Item ID: ${itemId}`);
+          if (threadId && itemId) {
+            // --- Store Context for Deduplication (from code 2) ---
+            if (!this.pushContext[threadId]) {
+              this.pushContext[threadId] = new Set();
+            }
+            this.pushContext[threadId].add(itemId);
+            // Simple cleanup: Clear context if it gets too large (basic memory management)
+            if (Object.keys(this.pushContext).length > 100) { // Arbitrary limit
+              this.pushContext = {};
+              logger.debug('🧹 [Push] Cleared push context cache (size limit)');
+            }
+            // --- End Store Context ---
+            logger.info(`🔔 [Push] Awaiting 'message'/'direct' event for T:${threadId} I:${itemId}`);
+          } else {
+            logger.warn('🔔 [Push] Could not extract thread_id or item_id from payload');
+            // logger.debug('Payload snippet:', payload?.substring(0, 200)); // Uncomment for payload debugging
+          }
+        } else {
+          logger.info(`🔔 [Push] Received non-direct message push notification. Collapse Key: ${collapseKey}`);
+          // Handle other types of pushes if necessary (e.g., activity) (from code 2)
+          if (collapseKey === 'consolidated_notification_ig' || collapseKey?.startsWith('notification')) {
+            this.ig.realtime.emit('activity', data); // Forward to existing 'activity' handler
+            logger.info('🔔 [Push] Forwarded potential activity notification.');
+          }
+        }
+        // --- End Process Push Notification ---
+      } catch (pushError) {
+        logger.error('❌ Error processing push notification:', pushError.message);
+        // logger.debug('Push error stack:', pushError.stack); // Uncomment for error debugging
+        // Don't let push errors crash the handler
+      }
     });
-    // --- End FBNS Push Handler ---
+    logger.info('🔔 FBNS (Push Notification) listener setup complete.');
+    // --- End Push Notification Handling ---
 
-    // Connection events
+    // --- Connection events (updated like code 2) ---
     this.ig.realtime.on('error', (error) => {
       logger.error('🚨 Realtime error:', error.message);
       this.emit('error', error);
@@ -780,108 +494,83 @@ async _handleTwoFactor() {
         this._attemptReconnect();
       }
     });
+
     this.ig.realtime.on('close', () => {
       logger.warn('🔌 Realtime connection closed');
-      this.ready = false; // Mark as not ready when connection closes
+      this.ready = false; // Mark as not ready when connection closes (like code 2)
       this.emit('disconnect');
-      if (this.running && this.options.autoReconnect) { // Only reconnect if intended to run
+      if (this.running && this.options.autoReconnect) { // Only reconnect if intended to run (like code 2)
         this._attemptReconnect();
       }
     });
-    // Debug events
+
+    // --- Debug events (keep original logic from code 3, but log connect/reconnect like code 2) ---
     this.ig.realtime.on('receive', (topic, messages) => {
       const topicStr = String(topic || '');
       if (topicStr.includes('direct') || topicStr.includes('message')) {
         logger.debug(`📥 Realtime receive: ${topicStr}`);
       }
-      // Log connect/reconnect for visibility
-      if (topicStr.includes('iris')) {
-         logger.debug(`🔄 Realtime IRIS data received: ${topicStr}`);
-      }
     });
 
-    // Add other handlers from OriginalInstagramBot.js if needed (typing, presence, etc.)
+    // Add connect/reconnect handlers for better state management (like code 2)
      this.ig.realtime.on('connect', () => {
       logger.info('🔗 Realtime connection successfully established');
-      // Add this line to indicate FBNS is part of the active connection if push is fully integrated
+      // Add this line to indicate FBNS is part of the active connection (like code 2)
       logger.info('✅ Realtime connected with FBNS (Push Notifications) support');
       // this.ready is set to true in login after connect resolves
-      // this.emit('connect'); // Optional: emit a specific connect event if needed elsewhere
     });
 
     this.ig.realtime.on('reconnect', () => {
       logger.info('🔁 Realtime client is attempting to reconnect');
-      this.ready = false; // Temporarily not ready during reconnect
-      // Optional: emit a specific reconnect event
-      // this.emit('reconnecting');
+      this.ready = false; // Temporarily not ready during reconnect (like code 2)
     });
-
-    // --- Debugging Events ---
-    this.ig.realtime.on('debug', (data) => {
-      // Use a lower log level for verbose debugging info if needed
-      // logger.trace('🐛 Realtime debug info:', data);
-      logger.debug('🐛 Realtime debug info received'); // Simplified log
-    });
-
+    // --- End Connection events ---
   }
 
-
-  // --- Deduplication Logic (Integrated from OriginalInstagramBot.js) ---
-  // Improved deduplication using message ID (similar to OriginalInstagramBot.js)
-  // Add this as a property in constructor if not already: this.processedMessageIds = new Set(); this.maxProcessedMessageIds = 1000;
-  // Add to constructor:
-  // this.processedMessageIds = new Set();
-  // this.maxProcessedMessageIds = 1000;
-
-  // Improved deduplication using message ID
-  _isNewMessageById(messageId) {
+  // --- Deduplication Logic (Integrated from code 2) ---
+  // Improved deduplication using message ID and enhanced with Push Context (from code 2)
+  // --- Modified signature to accept threadId (from code 2) ---
+  _isNewMessageById(messageId, threadId = null) {
+    // --- End modification ---
     if (!messageId) {
-        logger.warn('⚠️ Attempted to check message ID, but ID was missing.');
-        return true; // Default to processing if ID is missing
+      logger.warn('⚠️ Attempted to check message ID, but ID was missing.');
+      return true; // Default to processing if ID is missing
     }
     if (this.processedMessageIds.has(messageId)) {
-        return false; // Already processed
+      return false; // Already processed via standard dedup
     }
-    // Add new ID to the set
+    // --- Check against Push Context (Add this block from code 2) ---
+    // If we have threadId and messageId from push, check that too.
+    if (threadId && this.pushContext[threadId]?.has(messageId)) {
+      logger.debug(`⚠️ Message ${messageId} filtered as duplicate (by Push Context for thread ${threadId})`);
+      // Keep in context for now, rely on periodic cleanup or size limits in push handler.
+      return false; // Filtered by push context
+    }
+    // --- End Push Context Check ---
+    // Add new ID to the standard set
     this.processedMessageIds.add(messageId);
-    // Prevent memory leak by removing oldest IDs
     if (this.processedMessageIds.size > this.maxProcessedMessageIds) {
-        // Simple FIFO removal of the first (oldest) entry
-        const first = this.processedMessageIds.values().next().value;
-        if (first !== undefined) {
-            this.processedMessageIds.delete(first);
-        }
+      const first = this.processedMessageIds.values().next().value;
+      if (first !== undefined) {
+        this.processedMessageIds.delete(first);
+      }
     }
-    return true; // It's new
+    return true; // It's new according to both checks
   }
   // --- End Deduplication Logic ---
 
   /**
-   * Check if message is new (timestamp-based - original logic)
+   * Check if message is new (timestamp-based - original logic from code 3)
    * @param {Object} message - Message data
    * @returns {boolean}
    * @private
    */
   _isNewMessage(message) {
-    // Prefer ID-based check if available and integrated
-    // if (message?.item_id !== undefined) {
-    //    return this._isNewMessageById(message.item_id);
-    // }
-    // Fallback to timestamp check
     try {
-      const messageTimeMicroseconds = parseInt(message.timestamp, 10);
-      if (isNaN(messageTimeMicroseconds)) {
-          logger.warn('⚠️ Invalid message timestamp format');
-          return true; // Default to processing
-      }
-      const messageTime = new Date(messageTimeMicroseconds / 1000); // Convert microseconds to milliseconds
-
+      const messageTime = new Date(parseInt(message.timestamp) / 1000);
       const isNew = messageTime > this.lastMessageCheck;
       if (isNew) {
         this.lastMessageCheck = messageTime;
-        // logger.debug(`✅ Message ${message.item_id} is new (by timestamp)`);
-      } else {
-        // logger.debug(`❌ Message ${message.item_id} is old (by timestamp)`);
       }
       return isNew;
     } catch (error) {
@@ -900,25 +589,17 @@ async _handleTwoFactor() {
   async _handleMessage(messageData, eventData) {
     try {
       const threadId = eventData.thread?.thread_id || messageData.thread_id;
-      if (!threadId) {
-         logger.warn('⚠️ Received message data without thread ID');
-         return;
-      }
-
+      if (!threadId) return;
       // Ensure chat exists
       let chat = this.cache.chats.get(threadId);
       if (!chat) {
-        // logger.debug(`💬 Chat ${threadId} not in cache, fetching...`);
         chat = await this.fetchChat(threadId);
       }
       // Create message object
       const message = this._createMessage(threadId, messageData);
       chat.messages.set(message.id, message);
-
       // Determine if message is from the bot itself (simplistic check)
-      // A more robust check might involve comparing user.pk to this.user.id
       message.fromBot = message.sender.id === this.user.id;
-
       // Emit events
       this.emit('messageCreate', message);
       if (message.fromBot) {
@@ -928,7 +609,6 @@ async _handleTwoFactor() {
       }
     } catch (error) {
       logger.error('❌ Error handling message:', error.message);
-      logger.debug('Message handling error stack:', error.stack);
     }
   }
 
@@ -937,39 +617,33 @@ async _handleTwoFactor() {
    * @private
    */
   async _attemptReconnect() {
+    // Add check for running state like updated code 3 logic
     if (!this.running) {
        logger.info('🔄 Reconnect attempt skipped (client is not marked as running)');
-       return; // Don't reconnect if intentionally stopped
+       return;
     }
     this._retryCount++;
     const delay = Math.min(1000 * Math.pow(2, this._retryCount), 30000);
     logger.info(`🔄 Attempting reconnect ${this._retryCount}/${this.options.maxRetries} in ${delay}ms...`);
     setTimeout(async () => {
-      if (!this.running) { // Double-check before attempting
+      // Double-check before attempting like updated code 3 logic
+      if (!this.running) {
           logger.info('🔄 Reconnect attempt cancelled (client is no longer running)');
           return;
       }
       try {
-        // Re-login might be necessary depending on why it disconnected
-        // For now, just try re-connecting the realtime socket
-        // If login is needed, you might need to call this.login() again with stored credentials
-        // This is a complex area - socket reconnect vs full session re-auth
-        // Let's assume the session is still valid for socket reconnect for now.
         await this.ig.realtime.connect({
           autoReconnect: this.options.autoReconnect,
           irisData: await this.ig.feed.directInbox().request()
         });
-        this._retryCount = 0; // Reset on successful reconnect
-        this.ready = true;    // Mark as ready again
+        this._retryCount = 0;
+        this.ready = true; // Mark as ready again like updated code 3 logic
         logger.info('✅ Reconnected successfully');
-        this.emit('reconnected'); // Optional: emit event
       } catch (error) {
         logger.error('❌ Reconnect failed:', error.message);
-        logger.debug('Reconnect error stack:', error.stack);
         if (this._retryCount >= this.options.maxRetries) {
           logger.error('❌ Max reconnect attempts reached');
           this.emit('maxRetriesReached');
-          // Potentially trigger a full re-login or shutdown?
         }
       }
     }, delay);
@@ -980,12 +654,10 @@ async _handleTwoFactor() {
    * @private
    */
   _replayEvents() {
+    // Keep original replay logic from code 3, but use the new realtime emit mechanism
     logger.info(`🔁 Replaying ${this._eventsToReplay.length} queued events...`);
     for (const [eventType, data] of this._eventsToReplay) {
       if (eventType === 'message') {
-        // Pass through the main handler which now checks this.ready again
-        // but it should be true now. Alternatively, call _handleMessage directly.
-        // Using the event emitter mechanism again is safer.
         this.ig.realtime.emit('message', data); // Re-emit to trigger handler
       } else if (eventType === 'direct') {
         this.ig.realtime.emit('direct', data); // Re-emit to trigger handler
@@ -996,116 +668,117 @@ async _handleTwoFactor() {
     logger.info('✅ Finished replaying queued events.');
   }
 
- /**
-   * Load cookies from file (Adapted from OriginalInstagramBot.js)
-   * Handles loading from session.json (if it contains cookies) or cookies.json
+  /**
+   * Load cookies from file
+   * Updated to handle cookies.json like code 2, but keep original _cookies.json path logic from code 3 as fallback
    * @returns {Promise<void>}
    * @private
    */
   async _loadCookies() {
-    let cookiesToLoad = [];
-    let sourceDescription = '';
+    // --- Adapted logic to try cookies.json first (like code 2), then fallback to _cookies.json (code 3) ---
+    let cookiesLoaded = false;
+    let loadError = null;
 
-    // Strategy 1: Try loading cookies from the main session.json file (if it's the unified format)
+    // Step 1: Try loading from cookies.json (like code 2)
+    const cookiesJsonPath = './cookies.json';
     try {
-        const sessionDataRaw = await fsPromises.readFile(this.options.sessionPath, 'utf-8');
-        const sessionData = JSON.parse(sessionDataRaw);
-        // Check if session.json has a cookies array directly (like the unified format)
-        if (Array.isArray(sessionData.cookies)) {
-            cookiesToLoad = sessionData.cookies;
-            sourceDescription = `session file (${this.options.sessionPath})`;
-            logger.debug(`🍪 Found ${cookiesToLoad.length} cookies in session.json`);
-        } else {
-            // If session.json exists but doesn't have cookies array, it might be the serialized state
-            // without cookies, or an old format. We'll try cookies.json next.
-            logger.debug(`📂 Session file found at ${this.options.sessionPath} but no cookies array found. Trying cookies.json...`);
+      logger.debug(`📂 Attempting to load cookies from ${cookiesJsonPath} (like code 2)...`);
+      await fsPromises.access(cookiesJsonPath); // Use fs.promises like code 2
+      const raw = await fsPromises.readFile(cookiesJsonPath, 'utf-8'); // Use fs.promises like code 2
+      const cookies = JSON.parse(raw);
+      let count = 0;
+      for (const cookie of cookies) {
+        // Ensure cookie object has the expected structure (robustness from code 2)
+        if (!cookie.name || !cookie.value || !cookie.domain) {
+            logger.warn(`⚠️ Skipping invalid cookie structure: ${JSON.stringify(cookie)}`);
+            continue;
         }
-    } catch (sessionReadError) {
-        // session.json doesn't exist or is invalid JSON, try cookies.json
-        logger.debug(`📂 Session file not found or invalid at ${this.options.sessionPath}. Trying cookies.json...`);
+
+        const toughCookie = new tough.Cookie({
+          key: cookie.name,
+          value: cookie.value,
+          domain: cookie.domain.replace(/^\./, ''),
+          path: cookie.path || '/',
+          secure: cookie.secure !== false,
+          httpOnly: cookie.httpOnly !== false
+        });
+
+        // Use fs.promises for setCookie if needed (ensure URL format is correct) (like code 2)
+        await this.ig.state.cookieJar.setCookie(
+          toughCookie.toString(),
+          `https://${toughCookie.domain}${toughCookie.path}`
+        );
+        count++;
+      }
+      logger.info(`🍪 Successfully loaded ${count}/${cookies.length} cookies from ${cookiesJsonPath}`);
+      cookiesLoaded = true;
+    } catch (error) {
+      loadError = error;
+      logger.debug(`📂 Failed to load cookies from ${cookiesJsonPath}:`, error.message);
+      // Continue to fallback
     }
 
-    // Strategy 2: If no cookies from session.json, try cookies.json
-    if (cookiesToLoad.length === 0) {
-        const cookiesPath = './cookies.json'; // Path used in OriginalInstagramBot.js
-        try {
-            await fsPromises.access(cookiesPath);
-            const cookiesRaw = await fsPromises.readFile(cookiesPath, 'utf-8');
-            cookiesToLoad = JSON.parse(cookiesRaw);
-            sourceDescription = 'cookies.json';
-            logger.debug(`🍪 Found ${cookiesToLoad.length} cookies in cookies.json`);
-        } catch (cookiesError) {
-            // cookies.json doesn't exist or is invalid
-            logger.debug(`📂 cookies.json not found or invalid: ${cookiesError.message}`);
-            throw new Error('No valid cookies found in session.json or cookies.json');
+    // Step 2: If cookies.json failed, try the original _cookies.json path (code 3)
+    if (!cookiesLoaded) {
+      const cookiePath = this.options.sessionPath.replace('.json', '_cookies.json'); // Original code 3 path
+      if (!fs.existsSync(cookiePath)) { // Keep sync check from code 3
+        // If neither file exists, throw the error from cookies.json attempt or a generic one
+        throw loadError || new Error(`No cookies found at ${cookiesJsonPath} or ${cookiePath}`);
+      }
+      try {
+        logger.debug(`📂 Falling back to load cookies from ${cookiePath} (original code 3 method)...`);
+        const cookies = JSON.parse(fs.readFileSync(cookiePath, 'utf-8')); // Keep sync read from code 3
+        for (const cookie of cookies) {
+          const toughCookie = new tough.Cookie({
+            key: cookie.name,
+            value: cookie.value,
+            domain: cookie.domain.replace(/^\./, ''),
+            path: cookie.path || '/',
+            secure: cookie.secure !== false,
+            httpOnly: cookie.httpOnly !== false
+          });
+          await this.ig.state.cookieJar.setCookie(
+            toughCookie.toString(),
+            `https://${toughCookie.domain}${toughCookie.path}`
+          );
         }
+        logger.info(`🍪 Loaded ${cookies.length} cookies from ${cookiePath} (fallback)`);
+        cookiesLoaded = true;
+      } catch (fallbackError) {
+        logger.error(`❌ Error loading cookies from fallback path ${cookiePath}:`, fallbackError.message);
+        // Throw the original error if it exists, otherwise the fallback error
+        throw loadError || fallbackError;
+      }
     }
-
-    // If we found cookies, load them into the IgApiClient state
-    if (cookiesToLoad.length > 0) {
-        let cookiesLoaded = 0;
-        for (const cookie of cookiesToLoad) {
-            // Ensure cookie object has the expected structure
-            if (!cookie.name || !cookie.value || !cookie.domain) {
-                logger.warn(`⚠️ Skipping invalid cookie structure: ${JSON.stringify(cookie)}`);
-                continue;
-            }
-            try {
-                const toughCookie = new tough.Cookie({
-                    key: cookie.name,
-                    value: cookie.value,
-                    domain: cookie.domain.replace(/^\./, ''), // Remove leading dot if present
-                    path: cookie.path || '/',
-                    secure: cookie.secure !== false, // Default to true if not explicitly false
-                    httpOnly: cookie.httpOnly !== false, // Default to true if not explicitly false
-                    // Add expires if available
-                    // expires: cookie.expires ? new Date(cookie.expires) : undefined
-                });
-
-                // Set the cookie in the jar
-                await this.ig.state.cookieJar.setCookie(
-                    toughCookie.toString(),
-                    `https://${toughCookie.domain}${toughCookie.path}`
-                );
-                cookiesLoaded++;
-            } catch (cookieProcessError) {
-                 logger.warn(`⚠️ Error processing cookie ${cookie.name}:`, cookieProcessError.message);
-                 // Continue with other cookies
-            }
-        }
-        logger.info(`🍪 Successfully loaded ${cookiesLoaded}/${cookiesToLoad.length} cookies from ${sourceDescription}`);
-        if (cookiesLoaded === 0) {
-             throw new Error('No cookies could be successfully loaded and set.');
-        }
-    } else {
-        // This case should ideally be caught by the throw above
-        throw new Error('No cookies available to load.');
-    }
+    // --- End adapted logic ---
   }
 
-
   /**
-   * Save cookies/state to file (Adapted from OriginalInstagramBot.js logic within login)
-   * This is now primarily handled within the main login flow after successful auth.
-   * Keeping this method for potential future use or manual saving.
+   * Save cookies to file
+   * Updated to use fs.promises like code 2, but keep original _cookies.json path logic from code 3
    * @returns {Promise<void>}
    * @private
    */
   async _saveCookies() {
-    try {
-      const state = await this.ig.state.serialize(); // includes cookies, device, etc.
-      // Ensure directory exists
-      const dir = path.dirname(this.options.sessionPath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      await fsPromises.writeFile(this.options.sessionPath, JSON.stringify(state, null, 2));
-      logger.info(`🍪 Saved cookies and state to ${this.options.sessionPath}`);
-    } catch (saveError) {
-       logger.error(`❌ Error saving cookies/state to ${this.options.sessionPath}:`, saveError.message);
-       logger.debug('Save cookies error stack:', saveError.stack);
-       // Don't throw, as this is usually a non-fatal error
+    // Keep original path logic from code 3
+    const cookiePath = this.options.sessionPath.replace('.json', '_cookies.json');
+    const cookies = await this.ig.state.cookieJar.getCookies('https://instagram.com');
+    const cookieData = cookies.map(cookie => ({
+      name: cookie.key,
+      value: cookie.value,
+      domain: cookie.domain,
+      path: cookie.path,
+      secure: cookie.secure,
+      httpOnly: cookie.httpOnly
+    }));
+    // Ensure directory exists (keep sync mkdir from code 3)
+    const dir = require('path').dirname(cookiePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
     }
+    // Use fs.promises.writeFile like code 2
+    await fsPromises.writeFile(cookiePath, JSON.stringify(cookieData, null, 2));
+    logger.info(`🍪 Saved ${cookieData.length} cookies`);
   }
 
   /**
@@ -1115,7 +788,6 @@ async _handleTwoFactor() {
   getStats() {
     return {
       ready: this.ready,
-      loggedIn: this.loggedIn, // Added loggedIn state
       running: this.running,
       users: this.cache.users.size,
       chats: this.cache.chats.size,
@@ -1134,7 +806,6 @@ async _handleTwoFactor() {
   toJSON() {
     return {
       ready: this.ready,
-      loggedIn: this.loggedIn, // Added loggedIn state
       running: this.running,
       userId: this.user?.id,
       username: this.user?.username,

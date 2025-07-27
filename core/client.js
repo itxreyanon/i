@@ -123,27 +123,14 @@ export class InstagramClient extends EventEmitter {
           logger.info('✅ Logged in using saved session file');
           loginSuccessful = true;
         } else {
-           logger.info(`📂 Session file not found at ${this.options.sessionPath}, trying cookies...`);
+           logger.info(`📂 Session file not found at ${this.options.sessionPath}, attempting fresh login...`);
         }
       } catch (sessionError) {
         logger.warn(`⚠️ Failed to load or validate session from ${this.options.sessionPath}:`, sessionError.message);
-        // Fall through to cookie loading
+        // Fall through to fresh login
       }
 
-      // If session login failed, try loading cookies (fallback mechanism from original code)
-      if (!loginSuccessful) {
-        try {
-          await this._loadCookies(); // This loads from ./session/session_cookies.json
-          await this.ig.account.currentUser(); // Validate cookie login
-          logger.info('✅ Logged in using saved cookies');
-          loginSuccessful = true;
-        } catch (cookieError) {
-          logger.info('🍪 Cookie login failed or cookies not found:', cookieError.message);
-          // Continue to fresh login
-        }
-      }
-
-      // If both session and cookie loading failed, attempt fresh login
+      // If session login failed, attempt fresh login
       if (!loginSuccessful) {
         if (!password) { // Check if password was provided
           throw new Error('❌ Password required for fresh login, but not provided.');
@@ -159,12 +146,10 @@ export class InstagramClient extends EventEmitter {
         }
         const session = await this.ig.state.serialize(); // Serialize the full state
         // DO NOT delete session.constants; // Keep all data including cookies
-        await fsPromises.writeFile(this.options.sessionPath, JSON.stringify(session, null, 2)); // Save full state
+        await fsPromises.writeFile(this.options.sessionPath, JSON.stringify(session, null, 2)); // Save full state using fs.promises
         logger.info(`✅ Fresh login successful. Full session state saved to ${this.options.sessionPath}`);
         loginSuccessful = true;
-         // --- Also save cookies as backup (optional, matches original flow) ---
-         await this._saveCookies(); // Save to ./session/session_cookies.json
-         logger.debug('🍪 Backup cookies saved.');
+         // --- No separate _saveCookies call needed, session.json has everything ---
       }
 
       if (loginSuccessful) {
@@ -207,6 +192,57 @@ export class InstagramClient extends EventEmitter {
     }
   }
 
+  /**
+   * Load cookies from file (Simplified to only use session.json)
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _loadCookies() {
+    // --- ONLY load from the main session.json file ---
+    const sessionPath = this.options.sessionPath; // Use the configured path
+    try {
+      logger.debug(`📂 Attempting to load session/cookies from ${sessionPath}...`);
+      await fsPromises.access(sessionPath); // Use fs.promises
+      const sessionDataRaw = await fsPromises.readFile(sessionPath, 'utf-8'); // Use fs.promises
+      const sessionData = JSON.parse(sessionDataRaw);
+
+      // Try to deserialize the full session state
+      // This should correctly populate ig.state.cookieJar if the session data is complete
+      await this.ig.state.deserialize(sessionData);
+      logger.info(`🍪 Session and cookies loaded from ${sessionPath} using state.deserialize`);
+      // --- End loading from session.json ---
+    } catch (error) {
+      logger.debug(`📂 Failed to load/parse session from ${sessionPath}:`, error.message);
+      throw error; // Re-throw to let the login function handle it (e.g., trigger fresh login)
+    }
+  }
+
+  /**
+   * Save cookies to file (Simplified to only save session.json)
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _saveCookies() {
+    // --- ONLY save to the main session.json file ---
+    const sessionPath = this.options.sessionPath; // Use the configured path
+    try {
+      // Ensure directory exists for sessionPath
+      const sessionDir = path.dirname(sessionPath);
+      if (!fs.existsSync(sessionDir)) {
+        fs.mkdirSync(sessionDir, { recursive: true });
+      }
+
+      const session = await this.ig.state.serialize(); // Serialize the full state
+      // DO NOT delete session.constants; // Keep all data including cookies
+      await fsPromises.writeFile(sessionPath, JSON.stringify(session, null, 2)); // Save full state using fs.promises
+      logger.info(`🍪 Full session state saved to ${sessionPath}`);
+      // --- End saving to session.json ---
+    } catch (error) {
+       logger.error(`❌ Error saving session to ${sessionPath}:`, error.message);
+       logger.debug('Save session error stack:', error.stack);
+       // Don't throw, as this is usually a non-fatal error for immediate functionality
+       // But it might cause issues on next restart if session wasn't saved.
+    }
 
   /**
    * Disconnect from Instagram
@@ -623,118 +659,8 @@ export class InstagramClient extends EventEmitter {
     logger.info('✅ Finished replaying queued events.');
   }
 
-  /**
-   * Load cookies from file
-   * Updated to handle cookies.json like code 2, but keep original _cookies.json path logic from code 3 as fallback
-   * @returns {Promise<void>}
-   * @private
-   */
-  async _loadCookies() {
-    // --- Adapted logic to try cookies.json first (like code 2), then fallback to _cookies.json (code 3) ---
-    let cookiesLoaded = false;
-    let loadError = null;
 
-    // Step 1: Try loading from cookies.json (like code 2)
-    const cookiesJsonPath = './cookies.json';
-    try {
-      logger.debug(`📂 Attempting to load cookies from ${cookiesJsonPath} (like code 2)...`);
-      await fsPromises.access(cookiesJsonPath); // Use fs.promises like code 2
-      const raw = await fsPromises.readFile(cookiesJsonPath, 'utf-8'); // Use fs.promises like code 2
-      const cookies = JSON.parse(raw);
-      let count = 0;
-      for (const cookie of cookies) {
-        // Ensure cookie object has the expected structure (robustness from code 2)
-        if (!cookie.name || !cookie.value || !cookie.domain) {
-            logger.warn(`⚠️ Skipping invalid cookie structure: ${JSON.stringify(cookie)}`);
-            continue;
-        }
 
-        const toughCookie = new tough.Cookie({
-          key: cookie.name,
-          value: cookie.value,
-          domain: cookie.domain.replace(/^\./, ''),
-          path: cookie.path || '/',
-          secure: cookie.secure !== false,
-          httpOnly: cookie.httpOnly !== false
-        });
-
-        // Use fs.promises for setCookie if needed (ensure URL format is correct) (like code 2)
-        await this.ig.state.cookieJar.setCookie(
-          toughCookie.toString(),
-          `https://${toughCookie.domain}${toughCookie.path}`
-        );
-        count++;
-      }
-      logger.info(`🍪 Successfully loaded ${count}/${cookies.length} cookies from ${cookiesJsonPath}`);
-      cookiesLoaded = true;
-    } catch (error) {
-      loadError = error;
-      logger.debug(`📂 Failed to load cookies from ${cookiesJsonPath}:`, error.message);
-      // Continue to fallback
-    }
-
-    // Step 2: If cookies.json failed, try the original _cookies.json path (code 3)
-    if (!cookiesLoaded) {
-      const cookiePath = this.options.sessionPath.replace('.json', '_cookies.json'); // Original code 3 path
-      if (!fs.existsSync(cookiePath)) { // Keep sync check from code 3
-        // If neither file exists, throw the error from cookies.json attempt or a generic one
-        throw loadError || new Error(`No cookies found at ${cookiesJsonPath} or ${cookiePath}`);
-      }
-      try {
-        logger.debug(`📂 Falling back to load cookies from ${cookiePath} (original code 3 method)...`);
-        const cookies = JSON.parse(fs.readFileSync(cookiePath, 'utf-8')); // Keep sync read from code 3
-        for (const cookie of cookies) {
-          const toughCookie = new tough.Cookie({
-            key: cookie.name,
-            value: cookie.value,
-            domain: cookie.domain.replace(/^\./, ''),
-            path: cookie.path || '/',
-            secure: cookie.secure !== false,
-            httpOnly: cookie.httpOnly !== false
-          });
-          await this.ig.state.cookieJar.setCookie(
-            toughCookie.toString(),
-            `https://${toughCookie.domain}${toughCookie.path}`
-          );
-        }
-        logger.info(`🍪 Loaded ${cookies.length} cookies from ${cookiePath} (fallback)`);
-        cookiesLoaded = true;
-      } catch (fallbackError) {
-        logger.error(`❌ Error loading cookies from fallback path ${cookiePath}:`, fallbackError.message);
-        // Throw the original error if it exists, otherwise the fallback error
-        throw loadError || fallbackError;
-      }
-    }
-    // --- End adapted logic ---
-  }
-
-  /**
-   * Save cookies to file
-   * Updated to use fs.promises like code 2, but keep original _cookies.json path logic from code 3
-   * @returns {Promise<void>}
-   * @private
-   */
-  async _saveCookies() {
-    // Keep original path logic from code 3
-    const cookiePath = this.options.sessionPath.replace('.json', '_cookies.json');
-    const cookies = await this.ig.state.cookieJar.getCookies('https://instagram.com');
-    const cookieData = cookies.map(cookie => ({
-      name: cookie.key,
-      value: cookie.value,
-      domain: cookie.domain,
-      path: cookie.path,
-      secure: cookie.secure,
-      httpOnly: cookie.httpOnly
-    }));
-    // Ensure directory exists (keep sync mkdir from code 3)
-      const dir = path.dirname(cookiePath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    // Use fs.promises.writeFile like code 2
-    await fsPromises.writeFile(cookiePath, JSON.stringify(cookieData, null, 2));
-    logger.info(`🍪 Saved ${cookieData.length} cookies`);
-  }
 
   /**
    * Get client statistics

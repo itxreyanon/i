@@ -15,6 +15,7 @@ class HyperInsta {
       this.showStartupBanner();
 
       console.log('📱 Connecting to Instagram...');
+console.log('🔍 Config loaded:', config.instagram);
 
       const username = process.env.INSTAGRAM_USERNAME || config.instagram.username;
       const password = process.env.INSTAGRAM_PASSWORD || config.instagram.password;

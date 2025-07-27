@@ -1,4 +1,4 @@
-const User = require('./User')
+import User from './User';
 
 /**
  * Represents the logged in client's Instagram user.
@@ -58,5 +58,4 @@ class ClientUser extends User {
         }
     }
 }
-
-module.exports = ClientUser
+export default ClientUser

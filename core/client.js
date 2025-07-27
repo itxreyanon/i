@@ -115,126 +115,164 @@ export class InstagramClient extends EventEmitter {
    * @returns {Promise<void>}
    */
 // Updated login method for client.js
+// Updated login method in client.js
 async login(username, password) {
   try {
-    const finalUsername = username || this.options.username || process.env.INSTAGRAM_USERNAME;
-    const finalPassword = password || this.options.password || process.env.INSTAGRAM_PASSWORD;
+    const finalUsername = username || this.options.username;
+    const finalPassword = password || this.options.password;
 
-    if (!finalUsername) {
-      throw new Error('❌ Instagram username is required');
+    if (!finalUsername || !finalPassword) {
+      throw new Error('Username and password are required');
     }
 
     logger.info(`🔑 Attempting login for @${finalUsername}...`);
+    
+    // Generate device with modern settings
     this.ig.state.generateDevice(finalUsername);
-
-    // Enable automatic challenge handling
-    this.ig.challenge.auto(true);
-
-    // Modern login flow with pre/post login simulation
-    await this.ig.simulate.preLoginFlow();
-
-    // Try session first if exists
-    let loginSuccess = false;
-    if (existsSync(this.options.sessionPath)) {
-      try {
-        const sessionData = JSON.parse(await fsPromises.readFile(this.options.sessionPath, 'utf-8'));
-        await this.ig.state.deserialize(sessionData);
+    
+    // Remove auto challenge handler since it's causing issues
+    // this.ig.challenge.auto(true); // Commented out
+    
+    try {
+      // Try session login first if exists
+      if (existsSync(this.options.sessionPath)) {
+        const session = JSON.parse(await fsPromises.readFile(this.options.sessionPath));
+        await this.ig.state.deserialize(session);
         
-        // Validate session
-        await this.ig.account.currentUser();
-        loginSuccess = true;
-        logger.info('✅ Logged in from existing session');
-      } catch (sessionError) {
-        logger.warn('⚠️ Session login failed:', sessionError.message);
+        // Verify session is still valid
+        try {
+          await this.ig.account.currentUser();
+          logger.info('✅ Logged in from existing session');
+          await this._completeLogin();
+          return;
+        } catch (sessionError) {
+          logger.warn('⚠️ Session expired, falling back to password login');
+        }
       }
-    }
 
-    // Fallback to password login if session fails
-    if (!loginSuccess && finalPassword) {
-      try {
-        await this.ig.account.login(finalUsername, finalPassword);
-        loginSuccess = true;
-        logger.info('✅ Logged in with password');
+      // Modern login flow
+      await this.ig.simulate.preLoginFlow();
+      const loggedInUser = await this.ig.account.login(finalUsername, finalPassword);
+      await this.ig.simulate.postLoginFlow();
 
-        // Save session after successful login
-        const session = await this.ig.state.serialize();
-        delete session.constants;
-        await fsPromises.writeFile(this.options.sessionPath, JSON.stringify(session, null, 2));
-        logger.info(`💾 Saved session to ${this.options.sessionPath}`);
-      } catch (loginError) {
-        logger.error('❌ Password login failed:', loginError.message);
-        throw loginError;
+      // Save session
+      const state = await this.ig.state.serialize();
+      delete state.constants;
+      await fsPromises.writeFile(this.options.sessionPath, JSON.stringify(state));
+      logger.info('💾 Saved new session');
+
+      await this._completeLogin();
+      
+    } catch (error) {
+      // Handle specific error cases
+      if (error.name === 'IgCheckpointError') {
+        logger.warn('⚠️ Checkpoint required - solving automatically');
+        await this._solveCheckpoint(error);
+        await this._completeLogin();
+        return;
       }
+      
+      if (error.name === 'IgLoginTwoFactorRequiredError') {
+        logger.warn('⚠️ 2FA required - implement 2FA handling');
+        throw new Error('2FA authentication required');
+      }
+      
+      throw error;
     }
-
-    if (!loginSuccess) {
-      throw new Error('No valid login method succeeded');
-    }
-
-    // Complete login flow
-    await this.ig.simulate.postLoginFlow();
-
-    // Initialize user and chats
-    const userInfo = await this.ig.account.currentUser();
-    this.user = this._patchOrCreateUser(userInfo.pk, userInfo);
-    await this._loadChats();
-
-    // Setup realtime connection
-    await this._setupRealtimeConnection();
-
-    this.loggedIn = true;
-    this.ready = true;
-    this.running = true;
-
-    logger.info(`🚀 Successfully logged in as @${this.user.username}`);
-    this.emit('ready');
-
   } catch (error) {
     logger.error('❌ Login failed:', error.message);
-    
-    // Handle specific error cases
-    if (error.name === 'IgCheckpointError') {
-      logger.warn('⚠️ Checkpoint required - manual verification needed');
-      await this._handleCheckpoint();
-    } else if (error.name === 'IgLoginTwoFactorRequiredError') {
-      logger.warn('⚠️ 2FA required - implement 2FA handling');
-      await this._handleTwoFactor();
-    }
-    
+    this.ready = false;
+    this.loggedIn = false;
     throw error;
   }
 }
 
 // Add these helper methods to your client class:
 
-async _setupRealtimeConnection() {
+async _completeLogin() {
+  // Initialize user
+  const userInfo = await this.ig.account.currentUser();
+  this.user = this._patchOrCreateUser(userInfo.pk, userInfo);
+  
+  // Load chats
+  await this._loadChats();
+  
+  // Connect to realtime
+  await this._setupRealtime();
+  
+  this.ready = true;
+  this.loggedIn = true;
+  logger.info(`🚀 Successfully logged in as @${this.user.username}`);
+  this.emit('ready');
+}
+
+async _solveCheckpoint(error) {
+  try {
+    // Reset challenge state
+    this.ig.state.challenge = null;
+    
+    // Alternative checkpoint solving
+    const challenge = await this.ig.challenge.auto(true);
+    if (!challenge) {
+      throw new Error('No checkpoint challenge available');
+    }
+    
+    // Select verification method (email by default)
+    await this.ig.challenge.selectVerifyMethod(challenge.step_data?.choice || '1');
+    
+    // Get security code (you might need to implement this differently)
+    const code = await this._getSecurityCode(); 
+    
+    // Submit code
+    await this.ig.challenge.sendSecurityCode(code);
+    
+    // Save session
+    const state = await this.ig.state.serialize();
+    await fsPromises.writeFile(this.options.sessionPath, JSON.stringify(state));
+    
+  } catch (challengeError) {
+    logger.error('❌ Failed to solve checkpoint:', challengeError.message);
+    throw new Error('Checkpoint verification failed');
+  }
+}
+
+async _getSecurityCode() {
+  // Implement your code retrieval logic here
+  // This could be:
+  // 1. Manual input via console
+  // 2. Email/SMS parsing
+  // 3. Database lookup
+  
+  // Example: Prompt user for input
+  const readline = require('readline').createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+  
+  return new Promise(resolve => {
+    readline.question('Enter verification code: ', code => {
+      readline.close();
+      resolve(code);
+    });
+  });
+}
+
+async _setupRealtime() {
   try {
     await this.ig.realtime.connect({
       irisData: await this.ig.feed.directInbox().request(),
       connectOverrides: {
-        // Required auth for current Instagram
         auth: {
           user: this.ig.state.cookieUserId,
           pass: this.ig.state.cookiePassword
         }
-      },
-      // Enable auto-reconnect
-      autoReconnect: true,
-      // Required subscriptions
-      graphQlSubs: [
-        GraphQLSubscriptions.getAppPresenceSubscription(),
-        GraphQLSubscriptions.getDirectStatusSubscription(),
-        GraphQLSubscriptions.getDirectTypingSubscription(this.ig.state.cookieUserId)
-      ],
-      skywalkerSubs: [
-        SkywalkerSubscriptions.directSub(this.ig.state.cookieUserId)
-      ]
+      }
     });
-
-    // Setup FBNS for push notifications
-    this.ig.fbns.push$.subscribe((data) => this._handlePushNotification(data));
+    
+    // Setup push notifications
+    this.ig.fbns.push$.subscribe(data => this._handlePushNotification(data));
     await this.ig.fbns.connect();
-
+    
     logger.info('📡 Realtime connection established');
   } catch (error) {
     logger.error('❌ Realtime connection failed:', error.message);

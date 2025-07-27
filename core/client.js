@@ -170,23 +170,19 @@ export class InstagramClient extends EventEmitter {
         }
       }
 
-      // Step 3: Fallback to fresh login using username & password if previous methods failed (from code 2)
-      if (!loginSuccess) {
-        // Check if password is available for fresh login (like code 2)
-        if (!finalPassword) {
-             logger.warn('⚠️ No password provided for fresh login attempt.');
-             throw new Error('No valid login method succeeded (session or cookies) and password is not available for fresh login.');
-        }
+      // Step 3: Fallback to fresh login using username & password if enabled
+      if (!loginSuccess && config.instagram?.password) {
         try {
-          logger.info('🔐 Attempting fresh login with username and password...');
-          await this.ig.account.login(finalUsername, finalPassword);
-          logger.info(`✅ Fresh login successful as @${finalUsername}`);
+          this.log('INFO', '🔐 Attempting fresh login with username and password...');
+          await this.ig.account.login(username, config.instagram.password);
+          this.log('INFO', `✅ Fresh login successful as @${username}`);
           loginSuccess = true;
-          // Save session after successful fresh login (like code 2)
-          const session = await this.ig.state.serialize();
-          delete session.constants;
-          await fsPromises.writeFile(sessionPath, JSON.stringify(session, null, 2)); // Use fs.promises like code 2
-          logger.info(`💾 Session file saved after fresh login to ${sessionPath}`);
+          // Yahan dhyan se dekho:
+          const session = await this.ig.state.serialize(); // <-- 1. Session serialize kiya
+          delete session.constants; // <-- 2. Constants hata diye (OPTIONAL)
+          // 3. Fir session.json mein save kar diya POORE session object ko
+          await fs.writeFile('./session.json', JSON.stringify(session, null, 2));
+          this.log('INFO', '💾 session.json saved after fresh login');
         } catch (loginError) {
           logger.error('❌ Fresh login failed:', loginError.message);
           logger.debug('Fresh login error stack:', loginError.stack);

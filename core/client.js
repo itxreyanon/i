@@ -116,6 +116,7 @@ export class InstagramClient extends EventEmitter {
    */
 // Updated login method for client.js
 // Updated login method in client.js
+// Updated login method in client.js
 async login(username, password) {
   try {
     const finalUsername = username || this.options.username;
@@ -127,15 +128,19 @@ async login(username, password) {
 
     logger.info(`🔑 Attempting login for @${finalUsername}...`);
     
-    // Generate device with modern settings
+    // 1. Initialize client with realistic device settings
     this.ig.state.generateDevice(finalUsername);
+    this.ig.state.deviceString = 'Android/10.0.0'; // More realistic device string
+    this.ig.state.deviceId = `android-${crypto.randomBytes(8).toString('hex')}`;
     
-    // Remove auto challenge handler since it's causing issues
-    // this.ig.challenge.auto(true); // Commented out
-    
-    try {
-      // Try session login first if exists
-      if (existsSync(this.options.sessionPath)) {
+    // 2. Implement request throttling
+    this.ig.request.end$.subscribe(() => {
+      return new Promise(resolve => setTimeout(resolve, 2000)); // 2s delay between requests
+    });
+
+    // 3. Try session login first if exists
+    if (existsSync(this.options.sessionPath)) {
+      try {
         const session = JSON.parse(await fsPromises.readFile(this.options.sessionPath));
         await this.ig.state.deserialize(session);
         
@@ -146,39 +151,66 @@ async login(username, password) {
           await this._completeLogin();
           return;
         } catch (sessionError) {
-          logger.warn('⚠️ Session expired, falling back to password login');
+          logger.warn('⚠️ Session expired:', sessionError.message);
         }
+      } catch (fileError) {
+        logger.warn('⚠️ Failed to load session:', fileError.message);
       }
+    }
 
-      // Modern login flow
-      await this.ig.simulate.preLoginFlow();
-      const loggedInUser = await this.ig.account.login(finalUsername, finalPassword);
-      await this.ig.simulate.postLoginFlow();
+    // 4. Implement retry mechanism with delays
+    const maxRetries = 3;
+    let lastError;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        logger.info(`Attempt ${attempt}/${maxRetries}`);
+        
+        // Add progressive delay between attempts
+        if (attempt > 1) {
+          const delaySeconds = Math.min(30, Math.pow(2, attempt)); // Exponential backoff
+          logger.info(`⏳ Waiting ${delaySeconds} seconds before retry...`);
+          await new Promise(resolve => setTimeout(resolve, delaySeconds * 1000));
+        }
 
-      // Save session
-      const state = await this.ig.state.serialize();
-      delete state.constants;
-      await fsPromises.writeFile(this.options.sessionPath, JSON.stringify(state));
-      logger.info('💾 Saved new session');
+        // 5. Modern login flow with proper headers
+        await this.ig.simulate.preLoginFlow();
+        const loggedInUser = await this.ig.account.login(finalUsername, finalPassword);
+        await this.ig.simulate.postLoginFlow();
 
-      await this._completeLogin();
-      
-    } catch (error) {
-      // Handle specific error cases
-      if (error.name === 'IgCheckpointError') {
-        logger.warn('⚠️ Checkpoint required - solving automatically');
-        await this._solveCheckpoint(error);
+        // 6. Save session with additional metadata
+        const state = await this.ig.state.serialize();
+        state.loginTimestamp = Date.now();
+        state.loginIP = await this._getPublicIP();
+        await fsPromises.writeFile(this.options.sessionPath, JSON.stringify(state));
+        logger.info('💾 Saved new session');
+
         await this._completeLogin();
         return;
+        
+      } catch (error) {
+        lastError = error;
+        
+        // Handle specific error cases
+        if (error.message.includes('token_expired') || error.message.includes('401')) {
+          logger.warn(`⚠️ Instagram blocked request (attempt ${attempt}): ${error.message}`);
+          continue;
+        }
+        
+        if (error.name === 'IgCheckpointError') {
+          logger.warn('⚠️ Checkpoint required - solving automatically');
+          await this._solveCheckpoint(error);
+          await this._completeLogin();
+          return;
+        }
+        
+        // For other errors, break the retry loop
+        break;
       }
-      
-      if (error.name === 'IgLoginTwoFactorRequiredError') {
-        logger.warn('⚠️ 2FA required - implement 2FA handling');
-        throw new Error('2FA authentication required');
-      }
-      
-      throw error;
     }
+    
+    throw lastError || new Error('Login failed after multiple attempts');
+    
   } catch (error) {
     logger.error('❌ Login failed:', error.message);
     this.ready = false;
@@ -187,17 +219,69 @@ async login(username, password) {
   }
 }
 
-// Add these helper methods to your client class:
+// Additional helper methods:
+
+async _getPublicIP() {
+  try {
+    const response = await fetch('https://api.ipify.org?format=json');
+    const data = await response.json();
+    return data.ip;
+  } catch {
+    return 'unknown';
+  }
+}
+
+async _solveCheckpoint(error) {
+  try {
+    // Reset challenge state
+    this.ig.state.challenge = null;
+    
+    // Get challenge
+    const challenge = await this.ig.challenge.auto(false); // Disable auto-resolve
+    
+    if (!challenge) {
+      throw new Error('No checkpoint challenge available');
+    }
+    
+    // Select email verification by default
+    const method = challenge.step_data?.choice || '1';
+    await this.ig.challenge.selectVerifyMethod(method);
+    
+    // Get security code (implement your own logic here)
+    const code = await this._getSecurityCode();
+    
+    // Submit code with delay
+    await new Promise(resolve => setTimeout(resolve, 5000)); // 5s delay
+    await this.ig.challenge.sendSecurityCode(code);
+    
+    // Verify challenge was solved
+    await new Promise(resolve => setTimeout(resolve, 3000)); // 3s delay
+    const user = await this.ig.account.currentUser();
+    
+    // Save session
+    const state = await this.ig.state.serialize();
+    await fsPromises.writeFile(this.options.sessionPath, JSON.stringify(state));
+    
+    logger.info('✅ Checkpoint solved successfully');
+    return user;
+    
+  } catch (error) {
+    logger.error('❌ Failed to solve checkpoint:', error.message);
+    throw error;
+  }
+}
 
 async _completeLogin() {
   // Initialize user
   const userInfo = await this.ig.account.currentUser();
   this.user = this._patchOrCreateUser(userInfo.pk, userInfo);
   
-  // Load chats
+  // Load chats with delay
+  await new Promise(resolve => setTimeout(resolve, 1000));
   await this._loadChats();
   
-  // Connect to realtime
+  // Connect to realtime with delay
+  await new Promise(resolve => setTimeout(resolve, 2000));
   await this._setupRealtime();
   
   this.ready = true;

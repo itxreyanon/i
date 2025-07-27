@@ -10,6 +10,8 @@ import  Message  from '../utils/Message.js';
 import { logger } from '../utils/utils.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { writeFileSync } from 'fs';
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -497,8 +499,6 @@ try {
    * @returns {Promise<void>}
    * @private
    */
-import { writeFileSync } from 'fs';
-import path from 'path';
 
 async _saveCookies() {
   const state = await this.ig.state.serialize(); // includes cookies, device, etc.

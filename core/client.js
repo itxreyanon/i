@@ -102,152 +102,110 @@ export class InstagramClient extends EventEmitter {
    * @param {string} [password] - Instagram password (can also be in options)
    * @returns {Promise<void>}
    */
-  async login(username, password) {
+ async login(username, password) { // Accept password as argument
     try {
-      // Use provided args, then options (like code 2)
-      const finalUsername = username || this.options.username;
-      const finalPassword = password || this.options.password;
+      logger.info('🔑 Logging into Instagram...');
+      this.ig.state.generateDevice(username);
 
-      if (!finalUsername) {
-        throw new Error('❌ INSTAGRAM_USERNAME is missing');
-      }
-      // Password is only required if session/cookies fail and fresh login is attempted
-      // Final password check happens later (like code 2)
+      let loginSuccessful = false;
 
-      logger.info(`🔑 Attempting login for @${finalUsername}...`);
-      this.ig.state.generateDevice(finalUsername);
-
-      let loginSuccess = false; // Flag to track successful login path (like code 2)
-
-      // Step 1: Try session.json first (adapted from code 2, using fs.promises)
-      // Use the sessionPath from code 3's options
-      const sessionPath = this.options.sessionPath;
+      // Try to load session first (the file specified in options)
       try {
-        await fsPromises.access(sessionPath); // Use fs.promises like code 2
-        logger.info(`📂 Found session file at ${sessionPath}, trying to login from session...`);
-        const sessionData = JSON.parse(await fsPromises.readFile(sessionPath, 'utf-8')); // Use fs.promises like code 2
-        await this.ig.state.deserialize(sessionData);
+        if (fs.existsSync(this.options.sessionPath)) { // Check if sessionPath file exists
+          logger.info(`📂 Attempting login using session file: ${this.options.sessionPath}`);
+          const sessionDataRaw = await fsPromises.readFile(this.options.sessionPath, 'utf-8');
+          const sessionData = JSON.parse(sessionDataRaw);
+          await this.ig.state.deserialize(sessionData);
 
-        // --- Add specific error handling for currentUser() (from code 2) ---
-        try {
-          await this.ig.account.currentUser(); // Validate session
-          logger.info('✅ Logged in from session file');
-          loginSuccess = true;
-        } catch (validationError) {
-          logger.warn('⚠️ Session validation failed:', validationError.message);
-          // Fall through to cookie login if session is invalid (like code 2)
+          // --- CRITICAL: Validate the loaded session ---
+          await this.ig.account.currentUser();
+          logger.info('✅ Logged in using saved session file');
+          loginSuccessful = true;
+        } else {
+           logger.info(`📂 Session file not found at ${this.options.sessionPath}, trying cookies...`);
         }
-        // --- End addition ---
-      } catch (sessionAccessError) {
-        logger.info(`📂 Session file not found or invalid at ${sessionPath}, trying cookies...`, sessionAccessError.message);
-        // Fall through to cookie login if session file access fails (like code 2)
+      } catch (sessionError) {
+        logger.warn(`⚠️ Failed to load or validate session from ${this.options.sessionPath}:`, sessionError.message);
+        // Fall through to cookie loading
       }
 
-      // Step 2: Try loading cookies if session login wasn't successful (adapted from code 2 logic)
-      if (!loginSuccess) {
+      // If session login failed, try loading cookies (fallback mechanism from original code)
+      if (!loginSuccessful) {
         try {
-          logger.info('📂 Attempting login using saved cookies...');
-          // Use the existing _loadCookies method from code 3, which should handle cookies.json or session cookies
-          await this._loadCookies();
-          try {
-            const currentUserResponse = await this.ig.account.currentUser();
-            logger.info(`✅ Logged in using saved cookies as @${currentUserResponse.username}`);
-            loginSuccess = true;
-            // Save session after successful cookie login (like code 2)
-            const session = await this.ig.state.serialize();
-            delete session.constants;
-            await fsPromises.writeFile(sessionPath, JSON.stringify(session, null, 2)); // Use fs.promises like code 2
-            logger.info(`💾 Session file saved from cookie-based login to ${sessionPath}`);
-          } catch (cookieValidationError) {
-            logger.error('❌ Failed to validate login using saved cookies:', cookieValidationError.message);
-            logger.debug('Cookie validation error stack:', cookieValidationError.stack);
-            // Continue to fresh login
-          }
-        } catch (cookieLoadError) {
-          logger.error('❌ Failed to load or process saved cookies:', cookieLoadError.message);
-          logger.debug('Cookie loading error stack:', cookieLoadError.stack);
+          await this._loadCookies(); // This loads from ./session/session_cookies.json
+          await this.ig.account.currentUser(); // Validate cookie login
+          logger.info('✅ Logged in using saved cookies');
+          loginSuccessful = true;
+        } catch (cookieError) {
+          logger.info('🍪 Cookie login failed or cookies not found:', cookieError.message);
           // Continue to fresh login
         }
       }
 
-      // Step 3: Fallback to fresh login using username & password if enabled
-if (!loginSuccess && config.instagram?.password) { // <-- Yahan problem
-  try {
-    this.log('INFO', '🔐 Attempting fresh login with username and password...');
-    await this.ig.account.login(username, config.instagram.password);
-          this.log('INFO', `✅ Fresh login successful as @${username}`);
-          loginSuccess = true;
-          // Yahan dhyan se dekho:
-          const session = await this.ig.state.serialize(); // <-- 1. Session serialize kiya
-          delete session.constants; // <-- 2. Constants hata diye (OPTIONAL)
-          // 3. Fir session.json mein save kar diya POORE session object ko
-          await fs.writeFile('./session.json', JSON.stringify(session, null, 2));
-          this.log('INFO', '💾 session.json saved after fresh login');
-        } catch (loginError) {
-          logger.error('❌ Fresh login failed:', loginError.message);
-          logger.debug('Fresh login error stack:', loginError.stack);
-          throw new Error(`Fresh login failed: ${loginError.message}`);
+      // If both session and cookie loading failed, attempt fresh login
+      if (!loginSuccessful) {
+        if (!password) { // Check if password was provided
+          throw new Error('❌ Password required for fresh login, but not provided.');
         }
+        logger.info('🔑 Attempting fresh login...');
+        await this.ig.account.login(username, password);
+
+        // --- CRITICAL: Save the FULL session state AFTER successful fresh login ---
+        // Ensure directory exists for sessionPath
+        const sessionDir = path.dirname(this.options.sessionPath);
+        if (!fs.existsSync(sessionDir)) {
+          fs.mkdirSync(sessionDir, { recursive: true });
+        }
+        const session = await this.ig.state.serialize(); // Serialize the full state
+        // DO NOT delete session.constants; // Keep all data including cookies
+        await fsPromises.writeFile(this.options.sessionPath, JSON.stringify(session, null, 2)); // Save full state
+        logger.info(`✅ Fresh login successful. Full session state saved to ${this.options.sessionPath}`);
+        loginSuccessful = true;
+         // --- Also save cookies as backup (optional, matches original flow) ---
+         await this._saveCookies(); // Save to ./session/session_cookies.json
+         logger.debug('🍪 Backup cookies saved.');
       }
 
-      if (loginSuccess) {
-        // --- Complete login setup AFTER successful authentication (like code 2) ---
-        // Initialize user
+      if (loginSuccessful) {
+        // Get user info
         const userInfo = await this.ig.account.currentUser();
         this.user = this._patchOrCreateUser(userInfo.pk, userInfo);
-        logger.info(`👤 Bot user initialized: @${this.user.username}`);
 
-        // Load chats with delay (keep original delay from code 3)
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        // Load existing chats
         await this._loadChats();
 
-        // Setup realtime handlers (call the existing method, but update it)
-        this._setupRealtimeHandlers(); // Register handlers
+        // Setup realtime handlers
+        this._setupRealtimeHandlers();
 
-        // Connect to realtime service (similar structure to code 2)
+        // Connect to realtime
         logger.info('📡 Connecting to Instagram realtime service...');
         await this.ig.realtime.connect({
-          // Add graphQlSubs and skywalkerSubs like code 2 for full features if needed
-          // graphQlSubs: [...],
-          // skywalkerSubs: [...],
-          irisData: await this.ig.feed.directInbox().request(),
-          connectOverrides: {},
-          // Add proxy options if needed like code 2
-          // socksOptions: this.options.proxy ? { ... } : undefined,
+          autoReconnect: this.options.autoReconnect,
+          irisData: await this.ig.feed.directInbox().request()
         });
-        logger.info('📡 Realtime connection established');
 
-        // --- Update state flags (like code 2 and updated code 3) ---
-        this.ready = true; // Mark as fully ready after connection
+        this.ready = true;
         this.running = true;
-
-        logger.info(`🚀 Successfully logged in and connected as @${this.user.username}`);
+        this._retryCount = 0;
+        logger.info(`✅ Connected as @${this.user.username} (ID: ${this.user.id})`);
         this.emit('ready');
 
-        // Replay queued events if any (keep original logic from code 3)
+        // Replay queued events
         this._replayEvents();
 
-        // --- End registration and connection ---
       } else {
-        throw new Error('No valid login method succeeded (session or cookies).');
+         throw new Error('Login process did not complete successfully.');
       }
+
     } catch (error) {
-      logger.error('❌ Failed to initialize bot:', error.message);
-      logger.debug('Initialization error stack:', error.stack); // Log stack trace (like code 2)
-
       this.ready = false;
-      this.running = false; // Ensure running is false on failure (like code 2)
-
-      // --- More specific error re-throwing (like code 2) ---
-      if (error.message.includes('login') || error.message.includes('cookie') || error.message.includes('session')) {
-        throw error; // Re-throw login/cookie/session specific errors
-      } else {
-        // Wrap unexpected errors
-        throw new Error(`Unexpected error during initialization: ${error.message}`);
-      }
-      // --- End specific error re-throwing ---
+      this.running = false;
+      logger.error('❌ Login failed:', error.message);
+      logger.debug('Login error stack:', error.stack);
+      throw error;
     }
   }
+
 
   /**
    * Disconnect from Instagram

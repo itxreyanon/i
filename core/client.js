@@ -3,7 +3,7 @@ import { withRealtime } from 'instagram_mqtt';
 import { EventEmitter } from 'events';
 import fs from 'fs';
 import tough from 'tough-cookie';
-import { Collection } from '../utils/Collection.js';
+import { Collection } from '@discordjs/collection';
 import { User } from '../utils/User.js';
 import { Chat } from '../utils/Chat.js';
 import { Message } from '../utils/Message.js';

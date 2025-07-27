@@ -497,29 +497,21 @@ try {
    * @returns {Promise<void>}
    * @private
    */
-  async _saveCookies() {
-    const cookiePath = this.options.sessionPath.replace('.json', '_cookies.json');
-    const cookies = await this.ig.state.cookieJar.getCookies('https://instagram.com');
-    
-    const cookieData = cookies.map(cookie => ({
-      name: cookie.key,
-      value: cookie.value,
-      domain: cookie.domain,
-      path: cookie.path,
-      secure: cookie.secure,
-      httpOnly: cookie.httpOnly
-    }));
+import { writeFileSync } from 'fs';
+import path from 'path';
 
-    // Ensure directory exists
-    const dir = path.dirname(cookiePath);
+async _saveCookies() {
+  const state = await this.ig.state.serialize(); // includes cookies, device, etc.
 
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-
-    fs.writeFileSync(cookiePath, JSON.stringify(cookieData, null, 2));
-    logger.info(`🍪 Saved ${cookieData.length} cookies`);
+  // Ensure directory exists
+  const dir = path.dirname(this.options.sessionPath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
   }
+
+  writeFileSync(this.options.sessionPath, JSON.stringify(state, null, 2));
+  logger.info(`🍪 Saved cookies and state to ${this.options.sessionPath}`);
+}
 
   /**
    * Get client statistics

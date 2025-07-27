@@ -290,35 +290,6 @@ async _completeLogin() {
   this.emit('ready');
 }
 
-async _solveCheckpoint(error) {
-  try {
-    // Reset challenge state
-    this.ig.state.challenge = null;
-    
-    // Alternative checkpoint solving
-    const challenge = await this.ig.challenge.auto(true);
-    if (!challenge) {
-      throw new Error('No checkpoint challenge available');
-    }
-    
-    // Select verification method (email by default)
-    await this.ig.challenge.selectVerifyMethod(challenge.step_data?.choice || '1');
-    
-    // Get security code (you might need to implement this differently)
-    const code = await this._getSecurityCode(); 
-    
-    // Submit code
-    await this.ig.challenge.sendSecurityCode(code);
-    
-    // Save session
-    const state = await this.ig.state.serialize();
-    await fsPromises.writeFile(this.options.sessionPath, JSON.stringify(state));
-    
-  } catch (challengeError) {
-    logger.error('❌ Failed to solve checkpoint:', challengeError.message);
-    throw new Error('Checkpoint verification failed');
-  }
-}
 
 async _getSecurityCode() {
   // Implement your code retrieval logic here

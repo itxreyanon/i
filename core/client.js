@@ -12,11 +12,11 @@ import {
 
 import tough from 'tough-cookie'; // Default import (depends on the package export style)
 
-import ClientUser from './structures/ClientUser.js';
-import Message from './structures/Message.js';
-import Chat from './structures/Chat.js';
-import User from './structures/User.js';
-import Util from './utils/utils.js'; // If utils exports multiple named exports
+import ClientUser from '../structures/ClientUser.js';
+import Message from '../structures/Message.js';
+import Chat from '../structures/Chat.js';
+import User from '../structures/User.js';
+import Util from './/utils/utils.js'; // If utils exports multiple named exports
 
 /**
  * Enhanced Instagram client with improved functionality

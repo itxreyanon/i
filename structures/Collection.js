@@ -167,3 +167,4 @@ export class Collection extends Map {
     return Object.fromEntries(this);
   }
 }
+export default Collection;

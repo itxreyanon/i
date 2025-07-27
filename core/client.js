@@ -11,6 +11,7 @@ import Message from '../utils/Message.js';
 import { logger } from '../utils/utils.js';
 import camelcaseKeys from 'camelcase-keys'; // Import for push notification parsing (from code 2)
 import { config } from '../config.js';
+import path from 'path';
 /**
  * Enhanced Instagram client with rich object support and robust login logic from instagram-bot.js
  * @extends {EventEmitter}
